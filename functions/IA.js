@@ -120,6 +120,7 @@ export async function fetchOpenAI_V2(
   const requestId = crypto.randomUUID();
   const startedAt = Date.now();
   let provider = null;
+  let presencePromise = null;
 
   try {
     const savedInstructions = await loadGroqInstructions(env, setupData);
@@ -137,7 +138,10 @@ export async function fetchOpenAI_V2(
 
     const dynamicInput = buildDynamicInput(userMessage, senderName, mesmaData, setupData);
 
-    await startPresence(phone, setupData, audioOnly);
+    // Não bloqueia a chamada de IA esperando o endpoint de typing/recording.
+    // O Promise é aguardado antes do envio da resposta para impedir que a presença
+    // seja ligada depois de a mensagem já ter sido entregue.
+    presencePromise = startPresence(phone, setupData, audioOnly);
 
     let result;
 
@@ -149,6 +153,7 @@ export async function fetchOpenAI_V2(
         input_length: dynamicInput.length,
         instructions_length: instructions.length,
         shared_history: true,
+        presence_parallel: true,
       });
 
       try {
@@ -209,6 +214,8 @@ export async function fetchOpenAI_V2(
       });
     }
 
+    if (presencePromise) await presencePromise;
+
     await wpp.enviarMensagemWhatsapp(
       env,
       result.text,
@@ -228,6 +235,7 @@ export async function fetchOpenAI_V2(
       shared_history: true,
       assistants_api_used: false,
       threads_used: false,
+      presence_parallel: true,
     });
 
     return [result.text];
@@ -241,6 +249,7 @@ export async function fetchOpenAI_V2(
       status: error?.status || null,
     });
 
+    if (presencePromise) await presencePromise;
     await stopPresence(phone, setupData, audioOnly);
     throw error;
   }
