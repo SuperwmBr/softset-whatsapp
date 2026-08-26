@@ -6,6 +6,7 @@ import {
 
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const DEFAULT_OPENAI_FALLBACK_MODEL = 'gpt-5.6-luna';
+const DEFAULT_OPENAI_TIMEOUT_MS = 20_000;
 
 function extractOutputText(payload) {
   if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
@@ -34,6 +35,13 @@ export function openAIFallbackModel(env) {
   return env?.OPENAI_FALLBACK_MODEL || DEFAULT_OPENAI_FALLBACK_MODEL;
 }
 
+function openAITimeoutMs(env) {
+  const configured = Number(env?.OPENAI_FALLBACK_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured >= 5_000
+    ? configured
+    : DEFAULT_OPENAI_TIMEOUT_MS;
+}
+
 export async function respondOpenAIResponses(env, {
   phone,
   setupData,
@@ -52,28 +60,50 @@ export async function respondOpenAIResponses(env, {
 
   const model = openAIFallbackModel(env);
   const startedAt = Date.now();
+  const timeoutMs = openAITimeoutMs(env);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort('openai_timeout'), timeoutMs);
 
   console.log('[OPENAI][RESPONSES][FALLBACK] request:start', {
     model,
     input_items: requestHistory.length,
     instructions_length: typeof instructions === 'string' ? instructions.length : 0,
     shared_history_items: previousHistory.length,
+    timeout_ms: timeoutMs,
   });
 
-  const response = await fetch(`${OPENAI_API_BASE}/responses`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      input: requestHistory,
-      instructions: instructions || undefined,
-      max_output_tokens: maxOutputTokens,
-      store: false,
-    }),
-  });
+  let response;
+  try {
+    response = await fetch(`${OPENAI_API_BASE}/responses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        input: requestHistory,
+        instructions: instructions || undefined,
+        max_output_tokens: maxOutputTokens,
+        store: false,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const timeoutError = new Error(`OpenAI fallback excedeu o limite de ${timeoutMs}ms`);
+      timeoutError.status = 504;
+      timeoutError.code = 'OPENAI_FALLBACK_TIMEOUT';
+      console.error('[OPENAI][RESPONSES][FALLBACK] request:timeout', {
+        elapsed_ms: Date.now() - startedAt,
+        timeout_ms: timeoutMs,
+      });
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const payload = await response.json().catch(() => ({}));
 
