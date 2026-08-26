@@ -1,0 +1,123 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  "name": "softset-whatsapp",
+
+  // Ajustaremos depois de ler o arquivo principal real.
+  "main": "worker.js",
+
+  "compatibility_date": "2026-08-25",
+
+  // Preserva vars/secrets existentes no Dashboard.
+  "keep_vars": true,
+
+  "services": [
+    {
+      "binding": "base64",
+      "service": "whatsapp-webhook"
+    },
+    {
+      "binding": "whatsappwebhook",
+      "service": "whatsapp-webhook"
+    }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "db",
+      "database_name": "db",
+      "database_id": "ef2097ef-6bab-4e1d-97d2-3c5b3a8c37f4"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "Controle_NotificacaoKV",
+      "id": "330d86b4a91c458c89f1a59648d1974f"
+    },
+    {
+      "binding": "FORM_ASSISTANTS",
+      "id": "9ad2d2270c9c41c7bb253329deac3865"
+    },
+    {
+      "binding": "Forms_KV",
+      "id": "bf88bc236c244f508badfb2e122caaab"
+    },
+    {
+      "binding": "MENU_STORAGE",
+      "id": "d2be05dc1cc94da4b5389d28776c30bd"
+    },
+    {
+      "binding": "Whatsapp_aviso_assinatura",
+      "id": "9c7c87e23f894eaea88a7f7eddd1aa38"
+    },
+    {
+      "binding": "Whatsapp_Calendar",
+      "id": "35df6c4234db4d199ba782bdaee4db82"
+    },
+    {
+      "binding": "Whatsapp_chatgpt",
+      "id": "a216ff57433b485792dfc09275364097"
+    },
+    {
+      "binding": "Whatsapp_chatgpt_audio",
+      "id": "f08669a99ba547ea915e5359118779c3"
+    },
+    {
+      "binding": "whatsapp_chathook",
+      "id": "b10cfc04552e4509891ad6540bb5db3d"
+    },
+    {
+      "binding": "Whatsapp_Clients",
+      "id": "e8f5fe82e9ff47eea394a0928f53982e"
+    },
+    {
+      "binding": "whatsapp_lastmessage",
+      "id": "998ebe8652bd48f3aba4d96344ee3d7f"
+    },
+    {
+      "binding": "whatsapp_menu_session",
+      "id": "e1c5d9884fd84fc78bf554eeb4bb8c2c"
+    },
+    {
+      "binding": "WHATSAPP_SETUP",
+      "id": "efb7591cb1ff40e7aca43d49c2907355"
+    },
+    {
+      "binding": "Whatsapp_show_ByWhatszAIp",
+      "id": "fc968b49943c412094bae6466323a6d0"
+    },
+    {
+      "binding": "whatsapp_status_plano",
+      "id": "8030a11980bc4df19f94017fde3e559f"
+    },
+    {
+      "binding": "Whatsapp_threads",
+      "id": "f926c1a4803d471ea8b203986ba546d6"
+    }
+  ],
+
+  "queues": {
+    "producers": [
+      {
+        "binding": "failgptprocessamentowhatsapp",
+        "queue": "failgptprocessamentowhatsapp"
+      },
+      {
+        "binding": "gptprocessamentoForms",
+        "queue": "gptprocessamento-forms"
+      },
+      {
+        "binding": "gptprocessamentowhatsapp",
+        "queue": "gptprocessamentowhatsapp"
+      }
+    ]
+  },
+
+  "r2_buckets": [
+    {
+      "binding": "template_form_html",
+      "bucket_name": "whatszaip"
+    }
+  ]
+}
