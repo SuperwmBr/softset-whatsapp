@@ -1,5 +1,6 @@
-// Camada de compatibilidade para migração gradual de OpenAI Assistants -> Groq.
-// O código legado permanece intacto em IA_legacy.js para formulários, filas e fallback.
+// Camada de compatibilidade da migração de Assistants/Threads para Responses API.
+// Groq permanece primário. OpenAI Responses API é somente fallback do chat genérico.
+// IA_legacy.js continua exportado apenas para fluxos ainda não migrados (ex.: formulários/queues).
 import * as legacy from './IA_legacy.js';
 import * as formata from './formatacoes.js';
 import * as wpp from './wppconnect.js';
@@ -8,6 +9,10 @@ import {
   loadGroqInstructions,
   respondGroq,
 } from './groq.js';
+import {
+  openAIResponsesEnabled,
+  respondOpenAIResponses,
+} from './openai_responses.js';
 
 export * from './IA_legacy.js';
 
@@ -19,7 +24,7 @@ async function stopPresence(phone, setupData, audioOnly) {
       await wpp.sendTyping(phone, false, setupData);
     }
   } catch (error) {
-    console.warn('[GROQ][WHATSAPP] Falha ao desligar presença', error?.message || String(error));
+    console.warn('[AI][WHATSAPP] Falha ao desligar presença', error?.message || String(error));
   }
 }
 
@@ -31,19 +36,17 @@ async function startPresence(phone, setupData, audioOnly) {
       await wpp.sendTyping(phone, true, setupData);
     }
   } catch (error) {
-    console.warn('[GROQ][WHATSAPP] Falha ao ligar presença', error?.message || String(error));
+    console.warn('[AI][WHATSAPP] Falha ao ligar presença', error?.message || String(error));
   }
 }
 
 /**
- * Compatibilidade segura para obter_setup():
- * - Com Groq + Assistant_ID já existente + instruções no D1, evita uma chamada remota
- *   desnecessária à Assistants API em toda mensagem.
- * - Se qualquer condição não estiver satisfeita, usa exatamente o fluxo legado.
- * - Nunca cria ID falso e nunca remove o Assistant_ID existente, mantendo o fallback OpenAI íntegro.
+ * Compatibilidade segura para obter_setup().
+ * Se as instruções já estão no D1, não precisamos consultar o Assistant remoto.
+ * Mantemos o ID antigo apenas como dado legado para fluxos ainda não migrados.
  */
 export async function verifica_assistant(idTokenCliente, assistantIdExists, env) {
-  if (!groqEnabled(env) || !assistantIdExists) {
+  if (!groqEnabled(env) && !openAIResponsesEnabled(env)) {
     return legacy.verifica_assistant(idTokenCliente, assistantIdExists, env);
   }
 
@@ -54,34 +57,54 @@ export async function verifica_assistant(idTokenCliente, assistantIdExists, env)
     });
 
     if (String(instructions || '').trim()) {
-      console.log('[GROQ][SETUP] Usando instruções D1; validação remota do Assistant dispensada', {
-        assistant_id_present: true,
+      console.log('[AI][SETUP] Usando instruções D1; Assistant remoto dispensado', {
+        assistant_id_present: Boolean(assistantIdExists),
         instructions_length: instructions.length,
+        groq_enabled: groqEnabled(env),
+        openai_responses_available: openAIResponsesEnabled(env),
       });
 
       return {
-        id: assistantIdExists,
+        id: assistantIdExists || null,
         name: idTokenCliente,
         instructions,
-        model: 'groq-primary-openai-fallback',
+        model: 'responses-api-d1',
       };
     }
   } catch (error) {
-    console.warn('[GROQ][SETUP] Falha ao carregar instruções D1; mantendo validação OpenAI legada', {
+    console.warn('[AI][SETUP] Falha ao carregar instruções D1; preservando compatibilidade legada', {
       message: error?.message || String(error),
     });
   }
 
+  // Somente para clientes ainda não migrados para ai_instructions.
+  // O chat genérico NÃO usa este Assistant como fallback de resposta.
   return legacy.verifica_assistant(idTokenCliente, assistantIdExists, env);
 }
 
+function buildDynamicInput(userMessage, senderName, mesmaData, setupData) {
+  let dynamicInput = '';
+  dynamicInput += `A data e hora atual, no contexto do atendimento, é ${formata.formatarDataBRUTC3(Math.floor(Date.now() / 1000))}.\n`;
+
+  if (mesmaData) {
+    dynamicInput += `Como é a primeira interação do dia, cumprimente com "${mesmaData}, ${senderName}!" e identifique-se como Atendente Virtual de ${setupData?.nome_fantasia || 'nossa empresa'}. `;
+    dynamicInput += 'Depois responda normalmente à dúvida do cliente.\n';
+  } else {
+    dynamicInput += 'Já houve contato hoje; não repita a saudação inicial. Responda diretamente à dúvida.\n';
+  }
+
+  dynamicInput += `Cliente: ${senderName || 'Cliente'}\n`;
+  dynamicInput += `Mensagem: ${userMessage}`;
+  return dynamicInput;
+}
+
 /**
- * Mantém o nome público fetchOpenAI_V2 para não alterar worker.js nem outros chamadores.
- * Quando GROQ_API_KEY existe, o chat genérico usa Groq Responses API.
- * Se Groq estiver indisponível, o fluxo legado OpenAI continua como fallback.
- *
- * Formulários e o consumer de Queue continuam exportados do IA_legacy.js sem alteração
- * nesta fase, evitando regressão no tool-calling existente.
+ * Mantém o nome público fetchOpenAI_V2 para não alterar worker.js nem demais chamadores.
+ * Arquitetura do chat genérico:
+ *   1) Groq Responses API (primário)
+ *   2) OpenAI Responses API (fallback)
+ * Ambos usam as mesmas instruções do D1 e a mesma memória conversacional persistida em KV.
+ * O fallback NÃO usa Assistant, Thread ou Run.
  */
 export async function fetchOpenAI_V2(
   userMessage,
@@ -94,31 +117,17 @@ export async function fetchOpenAI_V2(
   setupData,
   audioOnly
 ) {
-  if (!groqEnabled(env)) {
-    console.warn('[GROQ][CHAT] GROQ_API_KEY ausente; usando fluxo OpenAI legado');
-    return legacy.fetchOpenAI_V2(
-      userMessage,
-      promptSystem,
-      senderName,
-      mesmaData,
-      env,
-      phone,
-      messageId,
-      setupData,
-      audioOnly
-    );
-  }
-
   const requestId = crypto.randomUUID();
   const startedAt = Date.now();
+  let provider = null;
 
   try {
     const savedInstructions = await loadGroqInstructions(env, setupData);
     const extraSystem = String(promptSystem || '').trim();
+    const instructions = [savedInstructions, extraSystem].filter(Boolean).join('\n\n');
 
-    // Evita responder sem a configuração do cliente, preservando a intenção do fluxo atual.
-    if (!savedInstructions && !extraSystem) {
-      console.warn('[GROQ][CHAT] Sem instruções configuradas; resposta não será gerada', {
+    if (!instructions) {
+      console.warn('[AI][CHAT] Sem instruções/base de conhecimento no D1; resposta não será gerada', {
         request_id: requestId,
         token_present: Boolean(setupData?.app_key || setupData?.token),
       });
@@ -126,42 +135,79 @@ export async function fetchOpenAI_V2(
       return;
     }
 
+    const dynamicInput = buildDynamicInput(userMessage, senderName, mesmaData, setupData);
+
     await startPresence(phone, setupData, audioOnly);
 
-    let dynamicInput = '';
-    dynamicInput += `A data e hora atual, no contexto do atendimento, é ${formata.formatarDataBRUTC3(Math.floor(Date.now() / 1000))}.\n`;
+    let result;
 
-    if (mesmaData) {
-      dynamicInput += `Como é a primeira interação do dia, cumprimente com "${mesmaData}, ${senderName}!" e identifique-se como Atendente Virtual de ${setupData?.nome_fantasia || 'nossa empresa'}. `;
-      dynamicInput += 'Depois responda normalmente à dúvida do cliente.\n';
+    if (groqEnabled(env)) {
+      provider = 'groq';
+      console.log('[AI][CHAT] provider:primary', {
+        request_id: requestId,
+        provider,
+        input_length: dynamicInput.length,
+        instructions_length: instructions.length,
+        shared_history: true,
+      });
+
+      try {
+        result = await respondGroq(env, {
+          phone,
+          setupData,
+          input: dynamicInput,
+          instructions,
+          maxOutputTokens: 1200,
+        });
+      } catch (groqError) {
+        console.error('[GROQ][CHAT] primary:error', {
+          request_id: requestId,
+          elapsed_ms: Date.now() - startedAt,
+          name: groqError?.name || 'Error',
+          message: groqError?.message || String(groqError),
+          status: groqError?.status || null,
+          openai_responses_available: openAIResponsesEnabled(env),
+        });
+
+        if (!openAIResponsesEnabled(env)) throw groqError;
+
+        provider = 'openai-responses';
+        console.warn('[AI][CHAT] fallback:OpenAI Responses API', {
+          request_id: requestId,
+          assistants_api_used: false,
+          threads_used: false,
+          shared_history: true,
+        });
+
+        result = await respondOpenAIResponses(env, {
+          phone,
+          setupData,
+          input: dynamicInput,
+          instructions,
+          maxOutputTokens: 1200,
+        });
+      }
     } else {
-      dynamicInput += 'Já houve contato hoje; não repita a saudação inicial. Responda diretamente à dúvida.\n';
+      if (!openAIResponsesEnabled(env)) {
+        throw new Error('Nenhum provedor de IA configurado: GROQ_API_KEY e OPENAI_API_KEY ausentes');
+      }
+
+      provider = 'openai-responses';
+      console.warn('[AI][CHAT] Groq indisponível; usando OpenAI Responses API', {
+        request_id: requestId,
+        assistants_api_used: false,
+        threads_used: false,
+        shared_history: true,
+      });
+
+      result = await respondOpenAIResponses(env, {
+        phone,
+        setupData,
+        input: dynamicInput,
+        instructions,
+        maxOutputTokens: 1200,
+      });
     }
-
-    dynamicInput += `Cliente: ${senderName || 'Cliente'}\n`;
-    dynamicInput += `Mensagem: ${userMessage}`;
-
-    const instructions = [savedInstructions, extraSystem]
-      .filter(Boolean)
-      .join('\n\n');
-
-    console.log('[GROQ][CHAT] request', {
-      request_id: requestId,
-      phone_present: Boolean(phone),
-      input_length: dynamicInput.length,
-      instructions_length: instructions.length,
-      audio_only: Boolean(audioOnly),
-      groq_enabled: true,
-      openai_fallback_available: Boolean(env?.OPENAI_API_KEY),
-    });
-
-    const result = await respondGroq(env, {
-      phone,
-      setupData,
-      input: dynamicInput,
-      instructions,
-      maxOutputTokens: 1200,
-    });
 
     await wpp.enviarMensagemWhatsapp(
       env,
@@ -172,44 +218,30 @@ export async function fetchOpenAI_V2(
       messageId
     );
 
-    console.log('[GROQ][CHAT] success', {
+    console.log('[AI][CHAT] success', {
       request_id: requestId,
       elapsed_ms: Date.now() - startedAt,
+      provider,
       model: result.model,
       response_id: result.id,
       output_length: result.text.length,
+      shared_history: true,
+      assistants_api_used: false,
+      threads_used: false,
     });
 
     return [result.text];
   } catch (error) {
-    console.error('[GROQ][CHAT] fatal', {
+    console.error('[AI][CHAT] fatal', {
       request_id: requestId,
       elapsed_ms: Date.now() - startedAt,
+      provider,
       name: error?.name || 'Error',
       message: error?.message || String(error),
       status: error?.status || null,
-      openai_fallback_available: Boolean(env?.OPENAI_API_KEY),
     });
 
     await stopPresence(phone, setupData, audioOnly);
-
-    // Migração sem corte brusco: enquanto o formulário/legado ainda depende de OpenAI,
-    // uma indisponibilidade do Groq não derruba o atendimento atual.
-    if (env?.OPENAI_API_KEY) {
-      console.warn('[GROQ][CHAT] Acionando fallback OpenAI legado');
-      return legacy.fetchOpenAI_V2(
-        userMessage,
-        promptSystem,
-        senderName,
-        mesmaData,
-        env,
-        phone,
-        messageId,
-        setupData,
-        audioOnly
-      );
-    }
-
     throw error;
   }
 }

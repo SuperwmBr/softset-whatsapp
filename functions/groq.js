@@ -1,8 +1,12 @@
+import {
+  loadConversationHistory,
+  saveConversationTurn,
+  resetConversationHistory,
+  trimHistory,
+} from './conversation_history.js';
+
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
-const CONVERSATION_TTL_SECONDS = 24 * 60 * 60;
-const MAX_HISTORY_ITEMS = 24;
-const MAX_HISTORY_JSON_CHARS = 90000;
 
 function safeError(error) {
   return {
@@ -23,64 +27,12 @@ function extractOutputText(payload) {
   for (const item of output) {
     if (item?.type !== 'message' || !Array.isArray(item.content)) continue;
     for (const content of item.content) {
-      if (content?.type === 'output_text' && typeof content.text === 'string') {
-        parts.push(content.text);
-      }
-      if (content?.type === 'text' && typeof content.text === 'string') {
-        parts.push(content.text);
-      }
+      if (content?.type === 'output_text' && typeof content.text === 'string') parts.push(content.text);
+      if (content?.type === 'text' && typeof content.text === 'string') parts.push(content.text);
     }
   }
 
   return parts.join('\n').trim();
-}
-
-function conversationKey(phone, setupData) {
-  const tenant = setupData?.app_key || setupData?.token || 'unknown';
-  // v2 evita interpretar antigos response_id como histórico JSON.
-  return `groq_history:v2:${tenant}:${phone}`;
-}
-
-function trimHistory(items = []) {
-  let history = Array.isArray(items) ? [...items] : [];
-
-  if (history.length > MAX_HISTORY_ITEMS) {
-    history = history.slice(-MAX_HISTORY_ITEMS);
-  }
-
-  while (history.length > 2 && JSON.stringify(history).length > MAX_HISTORY_JSON_CHARS) {
-    history.shift();
-  }
-
-  return history;
-}
-
-async function loadConversationHistory(env, phone, setupData) {
-  if (!env?.Whatsapp_threads) return [];
-
-  const key = conversationKey(phone, setupData);
-  const raw = await env.Whatsapp_threads.get(key);
-  if (!raw) return [];
-
-  try {
-    const parsed = JSON.parse(raw);
-    return trimHistory(Array.isArray(parsed) ? parsed : []);
-  } catch (error) {
-    console.warn('[GROQ][HISTORY] Histórico inválido; reiniciando conversa', safeError(error));
-    await env.Whatsapp_threads.delete(key);
-    return [];
-  }
-}
-
-async function saveConversationHistory(env, phone, setupData, history) {
-  if (!env?.Whatsapp_threads) return;
-
-  const key = conversationKey(phone, setupData);
-  const trimmed = trimHistory(history);
-
-  await env.Whatsapp_threads.put(key, JSON.stringify(trimmed), {
-    expirationTtl: CONVERSATION_TTL_SECONDS,
-  });
 }
 
 export function groqEnabled(env) {
@@ -167,7 +119,6 @@ async function requestGroq(env, body) {
     prompt_tokens: payload?.usage?.input_tokens ?? null,
     output_tokens: payload?.usage?.output_tokens ?? null,
     total_tokens: payload?.usage?.total_tokens ?? null,
-    inference_total_time: payload?.metadata?.total_time ?? null,
   });
 
   return {
@@ -188,42 +139,38 @@ export async function respondGroq(env, {
   if (!env?.GROQ_API_KEY) throw new Error('GROQ_API_KEY não configurada');
   if (!input || typeof input !== 'string') throw new Error('input é obrigatório');
 
-  // A Groq Responses API não suporta previous_response_id/store neste momento.
-  // Mantemos o histórico explicitamente no KV e o reenviamos em cada request.
   const previousHistory = await loadConversationHistory(env, phone, setupData);
   const requestHistory = trimHistory([
     ...previousHistory,
     { role: 'user', content: input },
   ]);
 
-  const body = {
+  const result = await requestGroq(env, {
     model: groqModel(env),
     input: requestHistory,
     instructions: instructions || undefined,
     max_output_tokens: maxOutputTokens,
-  };
+  });
 
-  const result = await requestGroq(env, body);
-
-  // A documentação da Groq recomenda acrescentar response.output ao histórico.
-  const outputItems = Array.isArray(result?.raw?.output) ? result.raw.output : [];
-  const nextHistory = trimHistory([
-    ...requestHistory,
-    ...outputItems,
-  ]);
-
-  await saveConversationHistory(env, phone, setupData, nextHistory);
+  const nextHistory = await saveConversationTurn(
+    env,
+    phone,
+    setupData,
+    previousHistory,
+    input,
+    result.text
+  );
 
   console.log('[GROQ][HISTORY] saved', {
     previous_items: previousHistory.length,
     request_items: requestHistory.length,
     saved_items: nextHistory.length,
+    shared_memory: true,
   });
 
   return result;
 }
 
 export async function resetGroqConversation(env, phone, setupData = {}) {
-  if (!env?.Whatsapp_threads) return;
-  await env.Whatsapp_threads.delete(conversationKey(phone, setupData));
+  await resetConversationHistory(env, phone, setupData);
 }
