@@ -7,6 +7,7 @@ import {
 
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
+const DEFAULT_GROQ_TIMEOUT_MS = 12_000;
 
 // L1: cache curtíssimo no isolate para eliminar leituras duplicadas dentro do mesmo atendimento.
 const INSTRUCTIONS_CACHE_TTL_MS = 5_000;
@@ -108,6 +109,13 @@ export function groqModel(env) {
   return env?.GROQ_MODEL || DEFAULT_GROQ_MODEL;
 }
 
+function groqTimeoutMs(env) {
+  const configured = Number(env?.GROQ_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured >= 3_000
+    ? configured
+    : DEFAULT_GROQ_TIMEOUT_MS;
+}
+
 export async function loadGroqInstructions(env, setupData = {}) {
   const tenant = setupData?.app_key || setupData?.token || '';
   const fallback = String(setupData?.prompt_na_pergunta || '').trim();
@@ -163,22 +171,44 @@ export async function loadGroqInstructions(env, setupData = {}) {
 async function requestGroq(env, body) {
   const startedAt = Date.now();
   const model = body.model;
+  const timeoutMs = groqTimeoutMs(env);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort('groq_timeout'), timeoutMs);
 
   console.log('[GROQ][RESPONSES] request:start', {
     model,
     input_items: Array.isArray(body.input) ? body.input.length : 1,
     instructions_length: typeof body.instructions === 'string' ? body.instructions.length : 0,
+    timeout_ms: timeoutMs,
   });
 
-  const response = await fetch(`${GROQ_API_BASE}/responses`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.GROQ_API_KEY}`,
-      'Content-Type': 'application/json',
-      'Groq-Beta': 'inference-metrics',
-    },
-    body: JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(`${GROQ_API_BASE}/responses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Groq-Beta': 'inference-metrics',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const timeoutError = new Error(`Groq excedeu o limite de ${timeoutMs}ms`);
+      timeoutError.status = 504;
+      timeoutError.code = 'GROQ_TIMEOUT';
+      console.error('[GROQ][RESPONSES] request:timeout', {
+        elapsed_ms: Date.now() - startedAt,
+        timeout_ms: timeoutMs,
+      });
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const payload = await response.json().catch(() => ({}));
 
