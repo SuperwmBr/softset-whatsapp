@@ -2,6 +2,12 @@ const CONVERSATION_TTL_SECONDS = 24 * 60 * 60;
 const MAX_HISTORY_ITEMS = 24;
 const MAX_HISTORY_JSON_CHARS = 90000;
 
+// Cache L1 curto no isolate. O KV continua sendo a fonte persistente da memória.
+// Isso elimina leituras KV repetidas em conversas ativas sem alterar o conteúdo salvo.
+const HISTORY_L1_TTL_MS = 30_000;
+const HISTORY_L1_MAX_ENTRIES = 500;
+const historyL1 = new Map();
+
 function tenantKey(setupData = {}) {
   return setupData?.app_key || setupData?.token || 'unknown';
 }
@@ -67,19 +73,65 @@ export function trimHistory(items = []) {
   return history;
 }
 
+function getL1History(key) {
+  const cached = historyL1.get(key);
+  if (!cached) return null;
+
+  if ((Date.now() - cached.savedAt) > HISTORY_L1_TTL_MS) {
+    historyL1.delete(key);
+    return null;
+  }
+
+  // Retorna cópia para impedir mutação acidental do valor cacheado.
+  return cached.history.map((item) => ({ ...item }));
+}
+
+function setL1History(key, history) {
+  if (!key) return;
+
+  if (historyL1.size >= HISTORY_L1_MAX_ENTRIES && !historyL1.has(key)) {
+    const oldestKey = historyL1.keys().next().value;
+    if (oldestKey) historyL1.delete(oldestKey);
+  }
+
+  historyL1.set(key, {
+    history: history.map((item) => ({ ...item })),
+    savedAt: Date.now(),
+  });
+}
+
+async function persistNormalizedHistory(env, key, history) {
+  if (!env?.Whatsapp_threads) return;
+
+  const serialized = JSON.stringify(history);
+  await env.Whatsapp_threads.put(key, serialized, {
+    expirationTtl: CONVERSATION_TTL_SECONDS,
+  });
+  setL1History(key, history);
+}
+
 export async function loadConversationHistory(env, phone, setupData = {}) {
   if (!env?.Whatsapp_threads) return [];
 
   const key = historyKey(phone, setupData);
+  const l1 = getL1History(key);
+  if (l1) {
+    console.log('[AI][HISTORY] l1-cache:hit', { items: l1.length });
+    return l1;
+  }
+
   const raw = await env.Whatsapp_threads.get(key);
 
   if (raw) {
     try {
-      return normalizeHistory(JSON.parse(raw));
+      const history = normalizeHistory(JSON.parse(raw));
+      setL1History(key, history);
+      return history;
     } catch (error) {
       console.warn('[AI][HISTORY] Histórico compartilhado inválido; reiniciando', {
         message: error?.message || String(error),
       });
+      historyL1.delete(key);
       await env.Whatsapp_threads.delete(key);
     }
   }
@@ -91,7 +143,7 @@ export async function loadConversationHistory(env, phone, setupData = {}) {
 
     const migrated = normalizeHistory(JSON.parse(legacyRaw));
     if (migrated.length) {
-      await saveConversationHistory(env, phone, setupData, migrated);
+      await persistNormalizedHistory(env, key, migrated);
       console.log('[AI][HISTORY] Histórico Groq v2 migrado para memória compartilhada', {
         items: migrated.length,
       });
@@ -109,9 +161,7 @@ export async function saveConversationHistory(env, phone, setupData = {}, histor
   if (!env?.Whatsapp_threads) return;
 
   const trimmed = trimHistory(normalizeHistory(history));
-  await env.Whatsapp_threads.put(historyKey(phone, setupData), JSON.stringify(trimmed), {
-    expirationTtl: CONVERSATION_TTL_SECONDS,
-  });
+  await persistNormalizedHistory(env, historyKey(phone, setupData), trimmed);
 }
 
 export async function saveConversationTurn(env, phone, setupData, previousHistory, userText, assistantText) {
@@ -121,11 +171,14 @@ export async function saveConversationTurn(env, phone, setupData, previousHistor
     { role: 'assistant', content: String(assistantText || '') },
   ]);
 
-  await saveConversationHistory(env, phone, setupData, next);
+  // Os itens acima já estão normalizados; evita uma segunda passagem completa pelo histórico.
+  await persistNormalizedHistory(env, historyKey(phone, setupData), next);
   return next;
 }
 
 export async function resetConversationHistory(env, phone, setupData = {}) {
   if (!env?.Whatsapp_threads) return;
-  await env.Whatsapp_threads.delete(historyKey(phone, setupData));
+  const key = historyKey(phone, setupData);
+  historyL1.delete(key);
+  await env.Whatsapp_threads.delete(key);
 }
