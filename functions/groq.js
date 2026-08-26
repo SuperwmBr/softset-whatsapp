@@ -8,11 +8,15 @@ import {
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
 
-// Cache muito curto apenas para evitar leituras duplicadas do mesmo bloco de instruções
-// dentro do mesmo ciclo de atendimento. Mantém atualização do painel praticamente imediata.
+// L1: cache curtíssimo no isolate para eliminar leituras duplicadas dentro do mesmo atendimento.
 const INSTRUCTIONS_CACHE_TTL_MS = 5_000;
 const INSTRUCTIONS_CACHE_MAX_ENTRIES = 100;
 const instructionsCache = new Map();
+
+// L2: cache persistente no KV já existente e compartilhado com o worker do painel.
+// O D1 continua sendo a fonte da verdade. O painel atualiza este cache após cada gravação.
+const KNOWLEDGE_CACHE_PREFIX = 'ai_instructions_cache:v1:';
+const KNOWLEDGE_CACHE_TTL_SECONDS = 6 * 60 * 60;
 
 function safeError(error) {
   return {
@@ -41,6 +45,10 @@ function extractOutputText(payload) {
   return parts.join('\n').trim();
 }
 
+function knowledgeCacheKey(tenant) {
+  return `${KNOWLEDGE_CACHE_PREFIX}${tenant}`;
+}
+
 function getCachedInstructions(tenant) {
   if (!tenant) return null;
   const cached = instructionsCache.get(tenant);
@@ -57,7 +65,6 @@ function getCachedInstructions(tenant) {
 function setCachedInstructions(tenant, instructions) {
   if (!tenant || !instructions) return;
 
-  // Evita crescimento indefinido em isolates quentes.
   if (instructionsCache.size >= INSTRUCTIONS_CACHE_MAX_ENTRIES && !instructionsCache.has(tenant)) {
     const oldestKey = instructionsCache.keys().next().value;
     if (oldestKey) instructionsCache.delete(oldestKey);
@@ -67,6 +74,30 @@ function setCachedInstructions(tenant, instructions) {
     instructions,
     savedAt: Date.now(),
   });
+}
+
+async function readPersistentKnowledgeCache(env, tenant) {
+  if (!env?.MENU_STORAGE || !tenant) return '';
+
+  try {
+    return String(await env.MENU_STORAGE.get(knowledgeCacheKey(tenant)) || '').trim();
+  } catch (error) {
+    console.warn('[AI][INSTRUCTIONS] kv-cache:read-error', safeError(error));
+    return '';
+  }
+}
+
+async function writePersistentKnowledgeCache(env, tenant, instructions) {
+  if (!env?.MENU_STORAGE || !tenant || !instructions) return;
+
+  try {
+    await env.MENU_STORAGE.put(knowledgeCacheKey(tenant), instructions, {
+      expirationTtl: KNOWLEDGE_CACHE_TTL_SECONDS,
+    });
+  } catch (error) {
+    // Falha de cache nunca pode interromper o atendimento: D1 continua sendo a fonte oficial.
+    console.warn('[AI][INSTRUCTIONS] kv-cache:write-error', safeError(error));
+  }
 }
 
 export function groqEnabled(env) {
@@ -81,16 +112,28 @@ export async function loadGroqInstructions(env, setupData = {}) {
   const tenant = setupData?.app_key || setupData?.token || '';
   const fallback = String(setupData?.prompt_na_pergunta || '').trim();
 
-  if (!env?.db || !tenant) return fallback;
+  if (!tenant) return fallback;
 
   const cachedInstructions = getCachedInstructions(tenant);
   if (cachedInstructions) {
-    console.log('[AI][INSTRUCTIONS] cache:hit', {
+    console.log('[AI][INSTRUCTIONS] memory-cache:hit', {
       instructions_length: cachedInstructions.length,
       ttl_ms: INSTRUCTIONS_CACHE_TTL_MS,
     });
     return cachedInstructions;
   }
+
+  const persistentCachedInstructions = await readPersistentKnowledgeCache(env, tenant);
+  if (persistentCachedInstructions) {
+    setCachedInstructions(tenant, persistentCachedInstructions);
+    console.log('[AI][INSTRUCTIONS] kv-cache:hit', {
+      instructions_length: persistentCachedInstructions.length,
+      ttl_seconds: KNOWLEDGE_CACHE_TTL_SECONDS,
+    });
+    return persistentCachedInstructions;
+  }
+
+  if (!env?.db) return fallback;
 
   try {
     const row = await env.db.prepare(`
@@ -104,6 +147,10 @@ export async function loadGroqInstructions(env, setupData = {}) {
     const instructions = String(row?.instructions || '').trim();
     if (instructions) {
       setCachedInstructions(tenant, instructions);
+      await writePersistentKnowledgeCache(env, tenant, instructions);
+      console.log('[AI][INSTRUCTIONS] d1:loaded-and-cached', {
+        instructions_length: instructions.length,
+      });
       return instructions;
     }
   } catch (error) {
