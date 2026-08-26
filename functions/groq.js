@@ -8,6 +8,12 @@ import {
 const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
 
+// Cache muito curto apenas para evitar leituras duplicadas do mesmo bloco de instruções
+// dentro do mesmo ciclo de atendimento. Mantém atualização do painel praticamente imediata.
+const INSTRUCTIONS_CACHE_TTL_MS = 5_000;
+const INSTRUCTIONS_CACHE_MAX_ENTRIES = 100;
+const instructionsCache = new Map();
+
 function safeError(error) {
   return {
     name: error?.name || 'Error',
@@ -35,6 +41,34 @@ function extractOutputText(payload) {
   return parts.join('\n').trim();
 }
 
+function getCachedInstructions(tenant) {
+  if (!tenant) return null;
+  const cached = instructionsCache.get(tenant);
+  if (!cached) return null;
+
+  if ((Date.now() - cached.savedAt) > INSTRUCTIONS_CACHE_TTL_MS) {
+    instructionsCache.delete(tenant);
+    return null;
+  }
+
+  return cached.instructions;
+}
+
+function setCachedInstructions(tenant, instructions) {
+  if (!tenant || !instructions) return;
+
+  // Evita crescimento indefinido em isolates quentes.
+  if (instructionsCache.size >= INSTRUCTIONS_CACHE_MAX_ENTRIES && !instructionsCache.has(tenant)) {
+    const oldestKey = instructionsCache.keys().next().value;
+    if (oldestKey) instructionsCache.delete(oldestKey);
+  }
+
+  instructionsCache.set(tenant, {
+    instructions,
+    savedAt: Date.now(),
+  });
+}
+
 export function groqEnabled(env) {
   return Boolean(env?.GROQ_API_KEY);
 }
@@ -49,6 +83,15 @@ export async function loadGroqInstructions(env, setupData = {}) {
 
   if (!env?.db || !tenant) return fallback;
 
+  const cachedInstructions = getCachedInstructions(tenant);
+  if (cachedInstructions) {
+    console.log('[AI][INSTRUCTIONS] cache:hit', {
+      instructions_length: cachedInstructions.length,
+      ttl_ms: INSTRUCTIONS_CACHE_TTL_MS,
+    });
+    return cachedInstructions;
+  }
+
   try {
     const row = await env.db.prepare(`
       SELECT instructions
@@ -59,7 +102,10 @@ export async function loadGroqInstructions(env, setupData = {}) {
     `).bind(tenant, tenant).first();
 
     const instructions = String(row?.instructions || '').trim();
-    if (instructions) return instructions;
+    if (instructions) {
+      setCachedInstructions(tenant, instructions);
+      return instructions;
+    }
   } catch (error) {
     console.warn('[GROQ][INSTRUCTIONS] D1 lookup failed; using setup fallback', safeError(error));
   }
