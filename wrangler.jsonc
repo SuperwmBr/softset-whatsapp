@@ -3,12 +3,10 @@
 
   "name": "softset-whatsapp",
 
-  // Ajustaremos depois de ler o arquivo principal real.
-  "main": "worker.js",
+  "main": "worker-entry.js",
 
   "compatibility_date": "2026-08-25",
 
-  // Preserva vars/secrets existentes no Dashboard.
   "keep_vars": true,
 
   "services": [

@@ -36,6 +36,46 @@ async function startPresence(phone, setupData, audioOnly) {
 }
 
 /**
+ * Compatibilidade segura para obter_setup():
+ * - Com Groq + Assistant_ID já existente + instruções no D1, evita uma chamada remota
+ *   desnecessária à Assistants API em toda mensagem.
+ * - Se qualquer condição não estiver satisfeita, usa exatamente o fluxo legado.
+ * - Nunca cria ID falso e nunca remove o Assistant_ID existente, mantendo o fallback OpenAI íntegro.
+ */
+export async function verifica_assistant(idTokenCliente, assistantIdExists, env) {
+  if (!groqEnabled(env) || !assistantIdExists) {
+    return legacy.verifica_assistant(idTokenCliente, assistantIdExists, env);
+  }
+
+  try {
+    const instructions = await loadGroqInstructions(env, {
+      app_key: idTokenCliente,
+      token: idTokenCliente,
+    });
+
+    if (String(instructions || '').trim()) {
+      console.log('[GROQ][SETUP] Usando instruções D1; validação remota do Assistant dispensada', {
+        assistant_id_present: true,
+        instructions_length: instructions.length,
+      });
+
+      return {
+        id: assistantIdExists,
+        name: idTokenCliente,
+        instructions,
+        model: 'groq-primary-openai-fallback',
+      };
+    }
+  } catch (error) {
+    console.warn('[GROQ][SETUP] Falha ao carregar instruções D1; mantendo validação OpenAI legada', {
+      message: error?.message || String(error),
+    });
+  }
+
+  return legacy.verifica_assistant(idTokenCliente, assistantIdExists, env);
+}
+
+/**
  * Mantém o nome público fetchOpenAI_V2 para não alterar worker.js nem outros chamadores.
  * Quando GROQ_API_KEY existe, o chat genérico usa Groq Responses API.
  * Se Groq estiver indisponível, o fluxo legado OpenAI continua como fallback.
