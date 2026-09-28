@@ -38,15 +38,19 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
     let menu_arearestrita = [];
   
   
-    const query = `
-      SELECT id, nome || IFNULL(' [' || setor || ']', '') AS name, whatsapp 
-      FROM whatsapp_atendentes_setores
-      WHERE 
-            --  1=2 and
-            token = ?
-      ORDER BY nome;
-      `;
-    const result = await env.db.prepare(query).bind(token).all();
+    // Leituras independentes da montagem do menu. Em paralelo, elas não alteram
+    // os dados nem a ordem de composição e reduzem a espera acumulada por I/O.
+    const [result, kv_disponibilidades, result_form, storedMenuItems_] = await Promise.all([
+      env.db.prepare(`
+        SELECT id, nome || IFNULL(' [' || setor || ']', '') AS name, whatsapp
+        FROM whatsapp_atendentes_setores
+        WHERE token = ?
+        ORDER BY nome;
+      `).bind(token).all(),
+      env.Whatsapp_Calendar.get(setup_data.app_key),
+      env.db.prepare(`SELECT * FROM wpp_forms_saved WHERE token = ? and active = 1 ORDER BY atualizadoEm DESC`).bind(token).all(),
+      env.MENU_STORAGE.get(`menu:${token}`),
+    ]);
     //    console.log( `Atendentes: [${result.results.length}] : ok? [${result.ok}]`, result.results)
   
     if (result.results.length > 0) {
@@ -101,7 +105,6 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
     let _menuFormulario = []
     */
   
-    const kv_disponibilidades = await env.Whatsapp_Calendar.get(setup_data.app_key)
     //  console.log("kv_disponibilidades",kv_disponibilidades )
     let disponibilidades
   
@@ -219,8 +222,6 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
   
   
   
-    const SelForms = `SELECT * FROM wpp_forms_saved WHERE token = ? and active = 1 ORDER BY atualizadoEm DESC`;
-    const result_form = await env.db.prepare(SelForms).bind(token).all();
     const formResult = result_form.results || [];
   
     console.log(`Resultado do SELECT * FROM wpp_forms_saved WHERE token = ${token} `, result_form.results);
@@ -321,7 +322,6 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
   
   
     //    console.log(`phone: ${phone}, M: ${message}, ${senderName}, token: ${token}`);
-    const storedMenuItems_ = await env.MENU_STORAGE.get(`menu:${token}`);
     const storedMenuItems = JSON.parse(storedMenuItems_)
     let storedMenu
     if (storedMenuItems && storedMenuItems.items) {
