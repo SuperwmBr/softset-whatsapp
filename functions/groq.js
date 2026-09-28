@@ -27,6 +27,21 @@ function safeError(error) {
   };
 }
 
+/**
+ * Cria um Error com metadados HTTP (status/code/details) usados no tratamento
+ * de falhas (timeout, resposta não-ok, corpo vazio). Centralizar a criação
+ * aqui evita repetir `error.status = ...` solto e corrige a tipagem: um
+ * `Error` puro não tem essas propriedades para o checkJs do TypeScript.
+ * @param {string} message
+ * @param {{status?: number, code?: string, details?: unknown}} [extra]
+ * @returns {Error & {status?: number, code?: string, details?: unknown}}
+ */
+function httpError(message, extra = {}) {
+  const error = /** @type {Error & {status?: number, code?: string, details?: unknown}} */ (new Error(message));
+  Object.assign(error, extra);
+  return error;
+}
+
 function extractOutputText(payload) {
   if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
     return payload.output_text.trim();
@@ -196,9 +211,10 @@ async function requestGroq(env, body) {
     });
   } catch (error) {
     if (controller.signal.aborted) {
-      const timeoutError = new Error(`Groq excedeu o limite de ${timeoutMs}ms`);
-      timeoutError.status = 504;
-      timeoutError.code = 'GROQ_TIMEOUT';
+      const timeoutError = httpError(`Groq excedeu o limite de ${timeoutMs}ms`, {
+        status: 504,
+        code: 'GROQ_TIMEOUT',
+      });
       console.error('[GROQ][RESPONSES] request:timeout', {
         elapsed_ms: Date.now() - startedAt,
         timeout_ms: timeoutMs,
@@ -213,9 +229,10 @@ async function requestGroq(env, body) {
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const error = new Error(payload?.error?.message || `Groq HTTP ${response.status}`);
-    error.status = response.status;
-    error.details = payload;
+    const error = httpError(payload?.error?.message || `Groq HTTP ${response.status}`, {
+      status: response.status,
+      details: payload,
+    });
     console.error('[GROQ][RESPONSES] request:error', {
       status: response.status,
       elapsed_ms: Date.now() - startedAt,
@@ -228,9 +245,7 @@ async function requestGroq(env, body) {
 
   const text = extractOutputText(payload);
   if (!text) {
-    const error = new Error('Groq retornou resposta sem texto');
-    error.status = 502;
-    throw error;
+    throw httpError('Groq retornou resposta sem texto', { status: 502 });
   }
 
   console.log('[GROQ][RESPONSES] request:ok', {
@@ -252,13 +267,26 @@ async function requestGroq(env, body) {
   };
 }
 
-export async function respondGroq(env, {
-  phone,
-  setupData,
-  input,
-  instructions,
-  maxOutputTokens = 1200,
-} = {}) {
+/**
+ * @typedef {{
+ *   phone?: string,
+ *   setupData?: Record<string, any>,
+ *   input?: string,
+ *   instructions?: string,
+ *   maxOutputTokens?: number,
+ * }} RespondGroqOptions
+ */
+
+/**
+ * checkJs infere o tipo de um parâmetro desestruturado só a partir das
+ * propriedades com valor-padrão (aqui, só `maxOutputTokens`), gerando falsos
+ * "Property does not exist" nesta função e em quem a chama. Nomear o
+ * parâmetro e desestruturar no corpo evita a inferência errada.
+ * @param {RespondGroqOptions} options
+ */
+export async function respondGroq(env, options = {}) {
+  const { phone, setupData, input, instructions, maxOutputTokens = 1200 } = options;
+
   if (!env?.GROQ_API_KEY) throw new Error('GROQ_API_KEY não configurada');
   if (!input || typeof input !== 'string') throw new Error('input é obrigatório');
 

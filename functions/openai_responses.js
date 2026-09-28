@@ -42,13 +42,41 @@ function openAITimeoutMs(env) {
     : DEFAULT_OPENAI_TIMEOUT_MS;
 }
 
-export async function respondOpenAIResponses(env, {
-  phone,
-  setupData,
-  input,
-  instructions,
-  maxOutputTokens = 1200,
-} = {}) {
+/**
+ * Cria um Error com metadados HTTP (status/code/details) usados no tratamento
+ * de falhas (timeout, resposta não-ok, corpo vazio). Centralizar a criação
+ * aqui evita repetir `error.status = ...` solto e corrige a tipagem: um
+ * `Error` puro não tem essas propriedades para o checkJs do TypeScript.
+ * @param {string} message
+ * @param {{status?: number, code?: string, details?: unknown}} [extra]
+ * @returns {Error & {status?: number, code?: string, details?: unknown}}
+ */
+function httpError(message, extra = {}) {
+  const error = /** @type {Error & {status?: number, code?: string, details?: unknown}} */ (new Error(message));
+  Object.assign(error, extra);
+  return error;
+}
+
+/**
+ * @typedef {{
+ *   phone?: string,
+ *   setupData?: Record<string, any>,
+ *   input?: string,
+ *   instructions?: string,
+ *   maxOutputTokens?: number,
+ * }} RespondOpenAIResponsesOptions
+ */
+
+/**
+ * checkJs infere o tipo de um parâmetro desestruturado só a partir das
+ * propriedades com valor-padrão (aqui, só `maxOutputTokens`), gerando falsos
+ * "Property does not exist" nesta função e em quem a chama. Nomear o
+ * parâmetro e desestruturar no corpo evita a inferência errada.
+ * @param {RespondOpenAIResponsesOptions} options
+ */
+export async function respondOpenAIResponses(env, options = {}) {
+  const { phone, setupData, input, instructions, maxOutputTokens = 1200 } = options;
+
   if (!env?.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY não configurada');
   if (!input || typeof input !== 'string') throw new Error('input é obrigatório');
 
@@ -91,9 +119,10 @@ export async function respondOpenAIResponses(env, {
     });
   } catch (error) {
     if (controller.signal.aborted) {
-      const timeoutError = new Error(`OpenAI fallback excedeu o limite de ${timeoutMs}ms`);
-      timeoutError.status = 504;
-      timeoutError.code = 'OPENAI_FALLBACK_TIMEOUT';
+      const timeoutError = httpError(`OpenAI fallback excedeu o limite de ${timeoutMs}ms`, {
+        status: 504,
+        code: 'OPENAI_FALLBACK_TIMEOUT',
+      });
       console.error('[OPENAI][RESPONSES][FALLBACK] request:timeout', {
         elapsed_ms: Date.now() - startedAt,
         timeout_ms: timeoutMs,
@@ -108,9 +137,10 @@ export async function respondOpenAIResponses(env, {
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const error = new Error(payload?.error?.message || `OpenAI HTTP ${response.status}`);
-    error.status = response.status;
-    error.details = payload;
+    const error = httpError(payload?.error?.message || `OpenAI HTTP ${response.status}`, {
+      status: response.status,
+      details: payload,
+    });
     console.error('[OPENAI][RESPONSES][FALLBACK] request:error', {
       status: response.status,
       elapsed_ms: Date.now() - startedAt,
@@ -123,9 +153,7 @@ export async function respondOpenAIResponses(env, {
 
   const text = extractOutputText(payload);
   if (!text) {
-    const error = new Error('OpenAI Responses retornou resposta sem texto');
-    error.status = 502;
-    throw error;
+    throw httpError('OpenAI Responses retornou resposta sem texto', { status: 502 });
   }
 
   const nextHistory = await saveConversationTurn(

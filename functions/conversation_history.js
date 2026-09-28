@@ -117,7 +117,11 @@ const historyLocks = new Map();
 
 async function withHistoryLock(key, fn) {
   const previous = historyLocks.get(key) || Promise.resolve();
-  let release;
+  // Inicializa com um no-op só para satisfazer a checagem de tipos (checkJs);
+  // o executor da Promise roda de forma síncrona, então `release` já está
+  // com o `resolve` real antes de qualquer `await` seguinte.
+  /** @type {(value?: any) => void} */
+  let release = () => {};
   const gate = new Promise((resolve) => { release = resolve; });
   historyLocks.set(key, previous.then(() => gate));
 
