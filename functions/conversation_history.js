@@ -110,6 +110,26 @@ async function persistNormalizedHistory(env, key, history) {
   setL1History(key, history);
 }
 
+// Lock por chave (telefone+tenant) dentro da isolate: serializa leituras/escritas
+// concorrentes do mesmo atendimento (ex.: duas mensagens quase simultâneas, ou
+// reentrega de webhook) para impedir que uma sobrescreva o turno salvo pela outra.
+const historyLocks = new Map();
+
+async function withHistoryLock(key, fn) {
+  const previous = historyLocks.get(key) || Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  historyLocks.set(key, previous.then(() => gate));
+
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (historyLocks.get(key) === gate) historyLocks.delete(key);
+  }
+}
+
 export async function loadConversationHistory(env, phone, setupData = {}) {
   if (!env?.Whatsapp_threads) return [];
 
@@ -165,15 +185,27 @@ export async function saveConversationHistory(env, phone, setupData = {}, histor
 }
 
 export async function saveConversationTurn(env, phone, setupData, previousHistory, userText, assistantText) {
-  const next = trimHistory([
-    ...(Array.isArray(previousHistory) ? previousHistory : []),
-    { role: 'user', content: String(userText || '') },
-    { role: 'assistant', content: String(assistantText || '') },
-  ]);
+  const key = historyKey(phone, setupData);
 
-  // Os itens acima já estão normalizados; evita uma segunda passagem completa pelo histórico.
-  await persistNormalizedHistory(env, historyKey(phone, setupData), next);
-  return next;
+  return withHistoryLock(key, async () => {
+    // Relê o estado mais recente em vez de confiar cegamente no snapshot capturado
+    // antes da chamada ao provedor de IA: se uma requisição concorrente do mesmo
+    // telefone já salvou um turno enquanto esta chamada estava em andamento, o
+    // histórico atual (mais longo) é usado como base para não perder aquele turno.
+    const latest = await loadConversationHistory(env, phone, setupData);
+    const base = latest.length >= (Array.isArray(previousHistory) ? previousHistory.length : 0)
+      ? latest
+      : previousHistory;
+
+    const next = trimHistory([
+      ...(Array.isArray(base) ? base : []),
+      { role: 'user', content: String(userText || '') },
+      { role: 'assistant', content: String(assistantText || '') },
+    ]);
+
+    await persistNormalizedHistory(env, key, next);
+    return next;
+  });
 }
 
 export async function resetConversationHistory(env, phone, setupData = {}) {
