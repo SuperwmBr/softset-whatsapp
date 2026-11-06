@@ -1218,7 +1218,7 @@ export default {
           // A ativação da IA pode prefixar a seleção com 💬 antes desta regra.
           // Remove os marcadores de modo para reconhecer a opção do menu mesmo assim.
           const mensagemEspecialNormalizada = String(messagem || "")
-            .replace(/^(?:💬|🎤|📵|📖)\\s*/u, "")
+            .replace(/^(?:💬|🎤|📵|📖)\s*/u, "")
             .trim()
             .toLowerCase();
 
