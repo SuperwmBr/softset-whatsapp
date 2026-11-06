@@ -83,11 +83,21 @@ export async function sendZapiResponse(phone, messagem, tipo, setup_data, env, c
             }
 
             const response = await fetch(textApiUrl, { method: 'POST', headers, body });
-            if (!response.ok)
-              console.error(`Erro ao enviar audio: ${response.statusText}`);
-            else {
-              //const retorna_fn_markdown = await fn_markdown( messagem.textoMensagem 
-              console.log("Parte do texto enviada com sucesso.");
+            const responseText = await response.text().catch(() => "");
+            if (!response.ok) {
+              console.error("[WPP][VOICE] Erro ao enviar áudio:", {
+                status: response.status,
+                statusText: response.statusText,
+                response: responseText.slice(0, 1000),
+                phone: mensagemObj.phone,
+                isLid: mensagemObj.isLid || false,
+              });
+            } else {
+              console.log("[WPP][VOICE] Áudio enviado com sucesso.", {
+                status: response.status,
+                phone: mensagemObj.phone,
+                isLid: mensagemObj.isLid || false,
+              });
             }
         }
       } else {
