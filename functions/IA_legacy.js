@@ -2146,9 +2146,14 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
       // await sendTyping(phone, true, setup_data); // Desliga o "digitando..." (Typing)
   
   
+      // Para contatos LID, o endpoint de envio precisa receber o identificador
+      // completo do chat, igual ao usado no envio de texto e no estado "gravando".
+      const phoneDestino = setup_data.isLid && setup_data.chatLid
+        ? setup_data.chatLid
+        : phone;
       const jBody = JSON.stringify(
         {
-          "phone": phone,
+          "phone": phoneDestino,
           "isLid": setup_data.isLid || false,
           "base64Ptt": voz_b64
         })
