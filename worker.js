@@ -1215,7 +1215,14 @@ export default {
 
 
 
-          if ((messagem.toLowerCase().trim() === "🤖 Clique aqui para saber tudo 😉".toLowerCase().trim())) {
+          // A ativação da IA pode prefixar a seleção com 💬 antes desta regra.
+          // Remove os marcadores de modo para reconhecer a opção do menu mesmo assim.
+          const mensagemEspecialNormalizada = String(messagem || "")
+            .replace(/^(?:💬|🎤|📵|📖)\\s*/u, "")
+            .trim()
+            .toLowerCase();
+
+          if (mensagemEspecialNormalizada === "🤖 clique aqui para saber tudo 😉") {
             let jBody = JSON.stringify({
               "phone": isLid ? setup_data.chatLid : phone,
               "isLid": isLid,
