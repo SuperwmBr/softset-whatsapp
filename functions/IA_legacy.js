@@ -2022,7 +2022,80 @@ export async function obtemTranscricaoAudio(messagem, setup_data, env, phone, pa
     }
   }
   
-  export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontradas, messageId, resume_openai) {
+  /**
+ * Gera voz pela API da Fiora do iCrochê.
+ *
+ * CONFIGURAÇÃO: cadastrar FIORA_VOICE_API_KEY como secret do Worker.
+ * O serviço aceita X-API-Key e retorna o áudio binário. Só usamos a resposta
+ * quando o serviço retorna OGG, formato usado pelo envio de PTT do WhatsApp.
+ *
+ * Para voltar ao provedor anterior, remova FIORA_VOICE_API_KEY do Worker.
+ * O fluxo abaixo detecta a ausência/falha e usa GoogleSpeech como fallback.
+ */
+async function FioraSpeech(text, env) {
+  const apiKey = env.FIORA_VOICE_API_KEY || env.FIORA_API_KEY;
+  if (!apiKey) {
+    console.warn("[TTS] FIORA_VOICE_API_KEY ausente; usando GoogleSpeech como fallback.");
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await fetch(
+      env.FIORA_VOICE_URL || "https://api.fiora.icroche.com.br/v1/audio",
+      {
+        method: "POST",
+        headers: {
+          "X-API-Key": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          voice: env.FIORA_VOICE_VOICE || "pf_dora",
+          speed: Number(env.FIORA_VOICE_SPEED) || 1,
+          model: env.FIORA_VOICE_MODEL || "primary",
+        }),
+        signal: controller.signal,
+      }
+    );
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok || !contentType.toLowerCase().includes("audio/ogg")) {
+      console.warn("[TTS] API da Fiora retornou resposta incompatível; usando GoogleSpeech.", {
+        status: response.status,
+        content_type: contentType.split(";")[0],
+      });
+      return null;
+    }
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length) {
+      console.warn("[TTS] API da Fiora retornou áudio vazio; usando GoogleSpeech.");
+      return null;
+    }
+
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+
+    console.log("[TTS] Áudio gerado pela API da Fiora.", {
+      content_type: contentType.split(";")[0],
+      bytes: bytes.length,
+    });
+    return btoa(binary);
+  } catch (error) {
+    console.warn("[TTS] Falha na API da Fiora; usando GoogleSpeech.", error?.message || String(error));
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontradas, messageId, resume_openai) {
     if (!text) {
       return new Response('Texto é obrigatório', { status: 400 });
     }
@@ -2061,14 +2134,12 @@ export async function obtemTranscricaoAudio(messagem, setup_data, env, phone, pa
         console.log(`thread_mensagem`, thread_mensagem)
       }
   
-      let voz_b64 = "", voiceGoogle = true;
-  
-      if (voiceGoogle) {
-        voz_b64 = await GoogleSpeech(thread_mensagem, setup_data)
-      } else {
-        const response_ret_b64 = await ElevenLabs(thread_mensagem)
-        const resp_b64 = await response_ret_b64.json();
-        voz_b64 = resp_b64.audio
+      // Provedor atual: API de voz da Fiora/iCrochê. A implementação anterior
+      // era Google Text-to-Speech; permanece como fallback reversível caso a API
+      // esteja sem chave, fora do ar ou não retorne OGG compatível com o WhatsApp.
+      let voz_b64 = await FioraSpeech(thread_mensagem, env);
+      if (!voz_b64) {
+        voz_b64 = await GoogleSpeech(thread_mensagem, setup_data);
       }
   
       await wpp.sendRecording(phone, false, setup_data) // liga o "digitando..." (Typing)
