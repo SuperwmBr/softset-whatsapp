@@ -2134,12 +2134,47 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
         console.log(`thread_mensagem`, thread_mensagem)
       }
   
-      // Provedor atual: API de voz da Fiora/iCrochê. A implementação anterior
-      // era Google Text-to-Speech; permanece como fallback reversível caso a API
-      // esteja sem chave, fora do ar ou não retorne OGG compatível com o WhatsApp.
-      let voz_b64 = await FioraSpeech(thread_mensagem, env);
+      // Provedor atual: API de voz da Fiora/iCrochê. Google permanece como fallback.
+      let voz_b64 = null;
+
+      console.log("[TTS][Fiora] Iniciando geração de voz.", {
+        texto_caracteres: thread_mensagem.length,
+      });
+      try {
+        voz_b64 = await FioraSpeech(thread_mensagem, env);
+        if (voz_b64) {
+          console.log("[TTS][Fiora] Geração concluída.", {
+            audio_base64_caracteres: voz_b64.length,
+            formato_esperado: "audio/ogg",
+          });
+        } else {
+          console.warn("[TTS][Fiora] Geração não disponível; acionando fallback Google.");
+        }
+      } catch (error) {
+        console.error("[TTS][Fiora] Falha na geração.", {
+          message: error?.message || String(error),
+        });
+      }
+
       if (!voz_b64) {
-        voz_b64 = await GoogleSpeech(thread_mensagem, setup_data);
+        console.log("[TTS][Google] Iniciando geração de fallback.", {
+          texto_caracteres: thread_mensagem.length,
+        });
+        try {
+          voz_b64 = await GoogleSpeech(thread_mensagem, setup_data);
+          if (!voz_b64) {
+            throw new Error("A API Google não retornou áudio.");
+          }
+          console.log("[TTS][Google] Geração concluída.", {
+            audio_base64_caracteres: voz_b64.length,
+            formato: "audio/ogg",
+          });
+        } catch (error) {
+          console.error("[TTS][Google] Falha na geração.", {
+            message: error?.message || String(error),
+          });
+          throw error;
+        }
       }
   
       await wpp.sendRecording(phone, false, setup_data) // liga o "digitando..." (Typing)
