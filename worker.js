@@ -324,30 +324,29 @@ export default {
         //await whatsapp_liga_desl_GPT_audio( 1, `${phone}_${setup_data.token}`, env);   //Audio habilitado por Default
 
         let ligaBot = setup_data.liga_desl_bot;
-        let gclid = "", timestamp = 0, orcamento_id = "";
+        let orcamento_id = "";
 
         try {
-            // 1. Melhoria no Regex para evitar erros se a mensagem for nula/vazia
-            const foneNormalizado = normalizarTelefone(messageData.whatsapp)
-            
-            if (foneNormalizado) { // Se match não for null (encontrou o padrão)
-                
-                // 2. CORREÇÃO: Removi o 'const' e as chaves extras. 
-                // Atribuímos diretamente às variáveis que você já declarou acima.
-                const resultado = await efetivarConversao(foneNormalizado);
-                
-                if (resultado) {
-                    gclid = resultado.gclid || "";
-                    timestamp = resultado.timestamp || 0;
-                    // orcamento_id já foi atribuído acima
-                }
+            // O PATCH do FraudGuard exige o Ref gerado no POST de registro.
+            // Sem Ref, não há conversão identificável para efetivar.
+            const refOrcamento = messagem.match(/Ref:\\s*([a-zA-Z0-9]{6})/i);
 
-                console.log(`Conversão efetivada para ID: ${orcamento_id}`);
+            if (refOrcamento) {
+                orcamento_id = refOrcamento[1];
+                const resultado = await efetivarConversao(orcamento_id);
+
+                if (resultado?.ok) {
+                    console.log(`[FraudGuard] Conversão efetivada para orçamento ${orcamento_id}:`, {
+                        efetivado: resultado.efetivado,
+                        ja_existia: resultado.ja_existia,
+                        evento_valor: resultado.evento_valor,
+                    });
+                }
             } else {
-                console.log(`Acesso orgânico. Não por Google ADS`);
+                console.log("[FraudGuard] Mensagem sem Ref de orçamento; efetivação ignorada.");
             }
         } catch (error) {
-            // 3. Captura o erro sem travar a execução do Worker/Bot
+            // Falha no registro de conversão não interrompe o atendimento do WhatsApp.
             console.error('Erro ao chamar efetivarConversao:', error.message);
         }
 
@@ -1912,8 +1911,8 @@ async function processarConversaoWhatsApp(textoMensagem) {
     return null;
 }
 
-async function efetivarConversao(foneNormalizado) {
-    console.log(`[FraudGuard] Efetivando conversão: ${foneNormalizado}`);
+async function efetivarConversao(orcamento_id) {
+    console.log(`[FraudGuard] Efetivando conversão do orçamento: ${orcamento_id}`);
 
     try {
         const resp = await fetch(
@@ -1925,7 +1924,7 @@ async function efetivarConversao(foneNormalizado) {
                     "X-API-Key": "3202354@Id",
                 },
                 body: JSON.stringify({
-                    foneNormalizado,
+                    orcamento_id,
                     value_min: 50.0,
                     value_max: 150.0,
                 }),
