@@ -329,7 +329,7 @@ export default {
         try {
             // O PATCH do FraudGuard exige o Ref gerado no POST de registro.
             // Sem Ref, não há conversão identificável para efetivar.
-            const refOrcamento = messagem.match(/Ref:\\s*([a-zA-Z0-9]{6})/i);
+            const refOrcamento = messagem.match(/Ref:\s*([a-zA-Z0-9]{6})/i);
 
             if (refOrcamento) {
                 orcamento_id = refOrcamento[1];
