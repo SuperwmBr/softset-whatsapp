@@ -2053,6 +2053,7 @@ async function FioraSpeech(text, env) {
         },
         body: JSON.stringify({
           text,
+          format: "ogg",
           voice: env.FIORA_VOICE_VOICE || "pf_dora",
           speed: Number(env.FIORA_VOICE_SPEED) || 1,
           model: env.FIORA_VOICE_MODEL || "primary",
