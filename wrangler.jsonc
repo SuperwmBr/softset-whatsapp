@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
 
-  "name": "softset-whatsapp",
+  "name": "whatsapp",
 
   "main": "worker-entry.js",
 
