@@ -382,8 +382,9 @@ export async function sendMensagemLida(phone, true_false, setup_data) {
     };
   
  
+    const recordingDestination = setup_data.isLid ? setup_data.chatLid : setup_data.phone;
     const body = JSON.stringify({
-      "phone": setup_data.isLid ? setup_data.chatLid : setup_data.phone, //  setup_data.isLid ? setup_data.chatLid : setup_data.phone,
+      "phone": recordingDestination, // Preserve the existing LID routing behavior.
       "value": true_false,
       "isLid": setup_data.isLid || isLidFallback
     });
@@ -443,7 +444,9 @@ export async function sendMensagemLida(phone, true_false, setup_data) {
           http_status: response.status,
           status_text: response.statusText,
           response: responseText.slice(0, 300).replace(/[\r\n]+/g, " "),
-          phone: maskPhoneForDiagnostics(setup_data.isLid ? setup_data.chatLid : phone),
+          phone: maskPhoneForDiagnostics(recordingDestination),
+          destination_present: Boolean(recordingDestination),
+          destination_characters: String(recordingDestination || "").length,
           is_lid: Boolean(setup_data.isLid),
           elapsed_ms: Date.now() - startedAt,
         });
@@ -459,7 +462,9 @@ export async function sendMensagemLida(phone, true_false, setup_data) {
         trace_id: traceId,
         value: Boolean(true_false),
         http_status: response.status,
-        phone: maskPhoneForDiagnostics(setup_data.isLid ? setup_data.chatLid : phone),
+        phone: maskPhoneForDiagnostics(recordingDestination),
+        destination_present: Boolean(recordingDestination),
+        destination_characters: String(recordingDestination || "").length,
         is_lid: Boolean(setup_data.isLid),
         elapsed_ms: Date.now() - startedAt,
       });
