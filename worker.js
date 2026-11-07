@@ -1223,22 +1223,60 @@ export default {
             .toLowerCase();
 
           if (mensagemEspecialNormalizada === "🤖 clique aqui para saber tudo 😉") {
+            const ttsTraceId = crypto.randomUUID();
+            console.log("[TTS][CTA] Opção reconhecida; iniciando resposta de voz.", {
+              trace_id: ttsTraceId,
+              phone: typeof phone === "string" && phone.length > 4 ? `${phone.slice(0, 3)}…${phone.slice(-4)}` : "***",
+              is_lid: Boolean(isLid),
+              chat_lid_present: Boolean(setup_data.chatLid),
+            });
+
             let jBody = JSON.stringify({
               "phone": isLid ? setup_data.chatLid : phone,
               "isLid": isLid,
-              "message": `🤖✨ Você está sendo atendido(a) por uma _inteligência artificial especializada_, treinada para oferecer respostas rápidas, precisas e personalizadas, como se estivesse conversando com um dos nossos especialistas reais! 🎯\n\n💡 _Quer sair deste modo?_\nDigite _*Menu*_ e envie a mensagem 👇 que retornaremos ao início.\n\n *Faça qualquer pergunta que tentarei te ajudar:*`, 
-              options: { markIsRead: false} ,
+              "message": `🤖✨ Você está sendo atendido(a) por uma _inteligência artificial especializada_, treinada para oferecer respostas rápidas, precisas e personalizadas, como se estivesse conversando com um dos nossos especialistas reais! 🎯\n\n💡 _Quer sair deste modo?_\nDigite _*Menu*_ e envie a mensagem 👇 que retornaremos ao início.\n\n *Faça qualquer pergunta que tentarei te ajudar:*`,
+              options: { markIsRead: false },
               "delayMessage": "1"
             });
 
-            await wpp.sendZapiResponse(phone, jBody, 'send-message', setup_data, env);
+            const introResponse = await wpp.sendZapiResponse(phone, jBody, "send-message", setup_data, env);
+            console.log("[TTS][CTA] Resultado do envio do texto inicial.", {
+              trace_id: ttsTraceId,
+              http_status: introResponse?.status ?? null,
+              ok: introResponse?.ok ?? false,
+            });
 
+            let ttsResponse;
+            try {
+              ttsResponse = await ia.Text_to_Speech(
+                `Oi ${senderName}, tudo bem? Sou uma inteligência artificial especializada, treinada para oferecer respostas rápidas, precisas e personalizadas para você, como se estivesse conversando com um dos nossos especialistas mesmo... Bom, para sair deste modo de IA, a qualquer momento, digite a palavra Menu, ok? Mas vamos lá, envie qualquer pergunta agora que queira saber, que eu tentarei te ajudar. O que gostaria de saber?`,
+                phone, setup_data, env, "", false, undefined, ttsTraceId
+              );
+              const ttsPayload = await ttsResponse?.clone?.().json().catch(() => null);
+              if (!ttsResponse?.ok || ttsPayload?.success === false) {
+                console.error("[TTS][CTA] Geração/envio de áudio terminou com falha.", {
+                  trace_id: ttsTraceId,
+                  http_status: ttsResponse?.status ?? null,
+                  payload: ttsPayload,
+                });
+              } else {
+                console.log("[TTS][CTA] Geração/envio de áudio concluído.", {
+                  trace_id: ttsTraceId,
+                  http_status: ttsResponse?.status ?? null,
+                  success: ttsPayload?.success ?? null,
+                });
+              }
+            } catch (error) {
+              console.error("[TTS][CTA] Exceção ao executar Text_to_Speech.", {
+                trace_id: ttsTraceId,
+                name: error?.name || "Error",
+                message: error?.message || String(error),
+              });
+            }
 
-            const ret_base64 = await ia.Text_to_Speech(`Oi ${senderName}, tudo bem? Sou uma inteligência artificial especializada, treinada para oferecer respostas rápidas, precisas e personalizadas para você, como se estivesse conversando com um dos nossos especialistas mesmo... Bom, para sair deste modo de IA, a qualquer momento, digite a palavra Menu, ok? Mas vamos lá, envie qualquer pergunta agora que queira saber, que eu tentarei te ajudar. O que gostaria de saber?`, phone, setup_data, env, '', false)
-            await fn.whatsapp_liga_desl_GPT("1", `${phone}_${setup_data.app_key}`, env);    //. <<<<<<<==== Liga o atendimento por ChatGPT
+            await fn.whatsapp_liga_desl_GPT("1", `${phone}_${setup_data.app_key}`, env);
 
             return new Response("Mensagem processada e resposta enviada.", { status: 200 });
-            //messagem = `?? ${messagem}` 
           }
 
           // 📖confirmado
