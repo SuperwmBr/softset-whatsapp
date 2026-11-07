@@ -2279,6 +2279,7 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
       return new Response(JSON.stringify({
         success: true,
         traceId,
+        audioContent: voz_b64,
         mimeType: "audio/ogg",
         audioBase64Characters: voz_b64.length,
         midiasEncontradas: midiasEncontradas,
