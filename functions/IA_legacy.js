@@ -2032,10 +2032,11 @@ export async function obtemTranscricaoAudio(messagem, setup_data, env, phone, pa
  * Para voltar ao provedor anterior, remova FIORA_VOICE_API_KEY do Worker.
  * O fluxo abaixo detecta a ausência/falha e usa GoogleSpeech como fallback.
  */
-async function FioraSpeech(text, env) {
+async function FioraSpeech(text, env, traceId) {
+  const startedAt = Date.now();
   const apiKey = env.FIORA_VOICE_API_KEY || env.FIORA_API_KEY;
   if (!apiKey) {
-    console.warn("[TTS] FIORA_VOICE_API_KEY ausente; usando GoogleSpeech como fallback.");
+    console.warn("[TTS][Fiora] Chave ausente; usando Google como fallback.", { trace_id: traceId });
     return null;
   }
 
@@ -2043,37 +2044,48 @@ async function FioraSpeech(text, env) {
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const response = await fetch(
-      env.FIORA_VOICE_URL || "https://api.fiora.icroche.com.br/v1/audio",
-      {
-        method: "POST",
-        headers: {
-          "X-API-Key": apiKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          format: "ogg",
-          voice: env.FIORA_VOICE_VOICE || "pf_dora",
-          speed: Number(env.FIORA_VOICE_SPEED) || 1,
-          model: env.FIORA_VOICE_MODEL || "primary",
-        }),
-        signal: controller.signal,
-      }
-    );
+    const url = env.FIORA_VOICE_URL || "https://api.fiora.icroche.com.br/v1/audio";
+    console.log("[TTS][Fiora] Requisição iniciada.", {
+      trace_id: traceId,
+      texto_caracteres: text.length,
+      formato_solicitado: "ogg",
+      voz: env.FIORA_VOICE_VOICE || "pf_dora",
+    });
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-Key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        text,
+        format: "ogg",
+        voice: env.FIORA_VOICE_VOICE || "pf_dora",
+        speed: Number(env.FIORA_VOICE_SPEED) || 1,
+        model: env.FIORA_VOICE_MODEL || "primary",
+      }),
+      signal: controller.signal,
+    });
 
     const contentType = response.headers.get("content-type") || "";
     if (!response.ok || !contentType.toLowerCase().includes("audio/ogg")) {
-      console.warn("[TTS] API da Fiora retornou resposta incompatível; usando GoogleSpeech.", {
+      const responseBody = await response.text().catch(() => "");
+      console.error("[TTS][Fiora] Resposta recusada.", {
+        trace_id: traceId,
         status: response.status,
         content_type: contentType.split(";")[0],
+        body: responseBody.slice(0, 500).replace(/[\r\n]+/g, " "),
+        elapsed_ms: Date.now() - startedAt,
       });
       return null;
     }
 
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!bytes.length) {
-      console.warn("[TTS] API da Fiora retornou áudio vazio; usando GoogleSpeech.");
+      console.error("[TTS][Fiora] API retornou arquivo vazio.", {
+        trace_id: traceId,
+        elapsed_ms: Date.now() - startedAt,
+      });
       return null;
     }
 
@@ -2083,26 +2095,48 @@ async function FioraSpeech(text, env) {
       binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
     }
 
-    console.log("[TTS] Áudio gerado pela API da Fiora.", {
+    console.log("[TTS][Fiora] Áudio recebido.", {
+      trace_id: traceId,
       content_type: contentType.split(";")[0],
       bytes: bytes.length,
+      elapsed_ms: Date.now() - startedAt,
     });
     return btoa(binary);
   } catch (error) {
-    console.warn("[TTS] Falha na API da Fiora; usando GoogleSpeech.", error?.message || String(error));
+    console.error("[TTS][Fiora] Erro na requisição.", {
+      trace_id: traceId,
+      name: error?.name || "Error",
+      message: error?.message || String(error),
+      elapsed_ms: Date.now() - startedAt,
+    });
     return null;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontradas, messageId, resume_openai) {
+export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontradas, messageId, resume_openai, traceId = crypto.randomUUID()) {
     if (!text) {
       return new Response('Texto é obrigatório', { status: 400 });
     }
+    const ttsStartedAt = Date.now();
+    let ttsStage = "start";
+    const phoneText = String(phone || "");
+    const phoneMasked = phoneText.length > 4 ? `${phoneText.slice(0, 3)}…${phoneText.slice(-4)}` : "***";
+    console.log("[TTS] Fluxo iniciado.", {
+      trace_id: traceId,
+      phone: phoneMasked,
+      is_lid: Boolean(setup_data?.isLid),
+      chat_lid_present: Boolean(setup_data?.chatLid),
+      texto_entrada_caracteres: String(text).length,
+    });
     try {
-  
-      await wpp.sendRecording(phone, true, setup_data) // liga o "digitando..." (Typing)
+      ttsStage = "recording_on";
+      const recordingOn = await wpp.sendRecording(phone, true, setup_data, { traceId });
+      console.log("[TTS] Indicador de gravação ligado.", {
+        trace_id: traceId,
+        response_status: recordingOn?.status ?? null,
+      });
       let thread_mensagem, thread_messageId
       if (resume_openai) {
         const prompt = `Caso seja a primeira vez que conversa com a pessoa hoje, comprimente-a chamando-a pelo nome ( ${setup_data.senderName} ), caso contrário apenas cite o nome dela antes das respostas. Faça uma boa resumida curta do texto ( ${text} ) e jamais fale o nome de emojis, simbolos ou "#" caso tenham na frase `
@@ -2139,26 +2173,32 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
       let voz_b64 = null;
 
       console.log("[TTS][Fiora] Iniciando geração de voz.", {
+        trace_id: traceId,
         texto_caracteres: thread_mensagem.length,
       });
       try {
-        voz_b64 = await FioraSpeech(thread_mensagem, env);
+        voz_b64 = await FioraSpeech(thread_mensagem, env, traceId);
         if (voz_b64) {
           console.log("[TTS][Fiora] Geração concluída.", {
+            trace_id: traceId,
             audio_base64_caracteres: voz_b64.length,
             formato_esperado: "audio/ogg",
           });
         } else {
-          console.warn("[TTS][Fiora] Geração não disponível; acionando fallback Google.");
+          console.warn("[TTS][Fiora] Geração não disponível; acionando fallback Google.", { trace_id: traceId });
         }
       } catch (error) {
         console.error("[TTS][Fiora] Falha na geração.", {
+          trace_id: traceId,
+          name: error?.name || "Error",
           message: error?.message || String(error),
         });
       }
 
       if (!voz_b64) {
+        ttsStage = "google_generation";
         console.log("[TTS][Google] Iniciando geração de fallback.", {
+          trace_id: traceId,
           texto_caracteres: thread_mensagem.length,
         });
         try {
@@ -2167,19 +2207,27 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
             throw new Error("A API Google não retornou áudio.");
           }
           console.log("[TTS][Google] Geração concluída.", {
+            trace_id: traceId,
             audio_base64_caracteres: voz_b64.length,
             formato: "audio/ogg",
           });
         } catch (error) {
           console.error("[TTS][Google] Falha na geração.", {
+            trace_id: traceId,
+            name: error?.name || "Error",
             message: error?.message || String(error),
           });
           throw error;
         }
       }
   
-      await wpp.sendRecording(phone, false, setup_data) // liga o "digitando..." (Typing)
-      // await sendTyping(phone, true, setup_data); // Desliga o "digitando..." (Typing)
+      ttsStage = "recording_off";
+      const recordingOff = await wpp.sendRecording(phone, false, setup_data, { traceId });
+      console.log("[TTS] Indicador de gravação desligado.", {
+        trace_id: traceId,
+        response_status: recordingOff?.status ?? null,
+        elapsed_ms: Date.now() - ttsStartedAt,
+      });
   
   
       // Para contatos LID, o endpoint de envio precisa receber o identificador
@@ -2193,9 +2241,22 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
           "isLid": setup_data.isLid || false,
           "base64Ptt": voz_b64
         })
-      console.log("Text_to_Speech >> jBody (tamanho):", jBody.length) // [MODIFICADO] Loga o tamanho
+      ttsStage = "voice_send";\n      console.log("[TTS] Enviando arquivo ao endpoint do WhatsApp.", {\n        trace_id: traceId,\n        destino: phoneMasked,\n        destino_completo: Boolean(phoneDestino),\n        is_lid: Boolean(setup_data.isLid),\n        chat_lid_present: Boolean(setup_data.chatLid),\n        audio_base64_caracteres: voz_b64.length,\n        payload_json_caracteres: jBody.length,\n      });
   
-      let zapiResponse = await wpp.sendZapiResponse(phone, jBody, 'send-voice-base64', setup_data, env, thread_mensagem);
+      const zapiResponse = await wpp.sendZapiResponse(
+        phone, jBody, "send-voice-base64", setup_data, env, thread_mensagem, { traceId }
+      );
+      const voiceSendBody = await zapiResponse?.clone?.().text().catch(() => "");
+      console.log("[TTS] Resultado do endpoint de envio.", {
+        trace_id: traceId,
+        http_status: zapiResponse?.status ?? null,
+        ok: zapiResponse?.ok ?? false,
+        elapsed_ms: Date.now() - ttsStartedAt,
+        response: String(voiceSendBody || "").slice(0, 500).replace(/[\r\n]+/g, " "),
+      });
+      if (!zapiResponse?.ok) {
+        throw new Error(`Falha no endpoint de envio de áudio (HTTP ${zapiResponse?.status ?? "desconhecido"}).`);
+      }
   
       if (midiasEncontradas.length > 0) {
         const zApiBaseUrl = `${setup_data.server_api}/api/${setup_data.app_key}`;
@@ -2210,10 +2271,16 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
       // await sendTyping(phone, false, setup_data); // Desliga o "digitando..." (Typing)
   
   
+      console.log("[TTS] Fluxo concluído.", {
+        trace_id: traceId,
+        success: true,
+        elapsed_ms: Date.now() - ttsStartedAt,
+      });
       return new Response(JSON.stringify({
         success: true,
-        audioContent: voz_b64,
-        mimeType: 'audio/ogg',
+        traceId,
+        mimeType: "audio/ogg",
+        audioBase64Characters: voz_b64.length,
         midiasEncontradas: midiasEncontradas,
       }), {
         headers: {
@@ -2223,12 +2290,31 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
       });
   
     } catch (error) {
-      await wpp.sendRecording(phone, false, setup_data) // liga o "digitando..." (Typing)
-      //await sendTyping(phone, false, setup_data); // Desliga o "digitando..." (Typing)
+      console.error("[TTS] Fluxo interrompido.", {
+        trace_id: traceId,
+        stage: ttsStage,
+        elapsed_ms: Date.now() - ttsStartedAt,
+        name: error?.name || "Error",
+        message: error?.message || String(error),
+      });
+      try {
+        const recordingOff = await wpp.sendRecording(phone, false, setup_data, { traceId });
+        console.log("[TTS] Indicador desligado após falha.", {
+          trace_id: traceId,
+          response_status: recordingOff?.status ?? null,
+        });
+      } catch (presenceError) {
+        console.error("[TTS] Falha ao desligar indicador após erro.", {
+          trace_id: traceId,
+          message: presenceError?.message || String(presenceError),
+        });
+      }
   
       return new Response(JSON.stringify({
         success: false,
-        error: error.message
+        traceId,
+        stage: ttsStage,
+        error: error?.message || String(error)
       }), {
         status: 500,
         headers: {
