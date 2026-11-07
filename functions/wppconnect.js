@@ -4,6 +4,12 @@ import * as fn from './funcoes-genericas.js';
 import * as ia from './IA.js';
 import * as wpp from './wppconnect.js';
 
+function maskPhoneForDiagnostics(value) {
+  const phone = String(value || "");
+  if (phone.length <= 4) return "***";
+  return `${phone.slice(0, 3)}…${phone.slice(-4)}`;
+}
+
 /**
  * Envia respostas através da Z-API com lógica híbrida e roteamento inteligente.
  * A função segue uma ordem de prioridade:
@@ -13,105 +19,148 @@ import * as wpp from './wppconnect.js';
  * b) Prioridade 2: URLs diretas (YouTube, Imagens, PDFs)
  * 3. Envia o texto restante e, em seguida, processa cada mídia encontrada com seu endpoint e payload corretos.
  */
-export async function sendZapiResponse(phone, messagem, tipo, setup_data, env, clearText = '') {
-    console.log(`Iniciando sendZapiResponse tipo: ${tipo} com a mensagem:`, messagem);
-
-    
-    let textoMensagem = messagem, midiasEncontradas, linksEncontrados, extractedContent = []
-    let l_fn_envia_markdown = false;
-    //console.log(`${tipo}`, messagem)
-  
+export async function sendZapiResponse(phone, messagem, tipo, setup_data, env, clearText = '', diagnostic = {}) {
+    const traceId = diagnostic?.traceId || null;
     const zApiBaseUrl = `${setup_data.server_api}/api/${setup_data.app_key}`;
     const headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${setup_data.ConnectionTokenAPI}`
     };
-  
-  
-    if (tipo !== "send-voice-base64") {
-      //console.log( "tipo !== 'send-voice-base64' :: messagem", messagem)
-      const mensagemObj = JSON.parse(messagem);
-      
-      let textoProcessado = mensagemObj?.message || mensagemObj?.description || '';
-  
-      console.log( "tipo !== 'send-voice-base64 (entrada)'", textoProcessado  )
-  
-      const retorna_fn_markdown = await fn_markdown(textoProcessado)
-  
-      if ((Array.isArray(retorna_fn_markdown.midiasEncontradas) && retorna_fn_markdown.midiasEncontradas.length > 0) || (Array.isArray(retorna_fn_markdown.linksEncontrados) && retorna_fn_markdown.linksEncontrados.length > 0)) {
-  
-        textoMensagem = retorna_fn_markdown.textoMensagem
-        const regex = /\n{3,}/g;   //Removar 3 ou mais saltos de linha 
-        textoMensagem = textoMensagem.replace(regex, '');
-  
-        midiasEncontradas = retorna_fn_markdown.midiasEncontradas || []
-        linksEncontrados = retorna_fn_markdown.linksEncontrados || []
-        //console.log(`sendZapiResponse:${tipo}:midiasEncontradas:`, midiasEncontradas)
-        //console.log(`sendZapiResponse:${tipo}:linksEncontrados:`, linksEncontrados)
-  
-       
-        if ((Array.isArray(midiasEncontradas) && midiasEncontradas.length > 0) || (Array.isArray(linksEncontrados) && linksEncontrados.length > 0)) {
-          l_fn_envia_markdown = true
-          //console.log("l_fn_envia_markdown", l_fn_envia_markdown)
-        }
-        messagem = retorna_fn_markdown.newMessage || "";
-        //console.log( "tipo !== 'send-voice-base64 (Saida)'", messagem   )
-      }
-    }
-    let messagemNormalizada = messagem.replace(/\r/g, '') || " ";
-    
 
-    console.log("Conteúdo da variável 'messagemNormalizada' ",tipo, messagemNormalizada)
-  
     if (tipo === "send-voice-base64") {
-      //try {
-      const textApiUrl = `${zApiBaseUrl}/send-voice-base64`;
-      //const body = JSON.stringify( messagem ) 
-      const { midiasEncontradas } = messagem
-      //console.log("Send-voice-base64, midias encontradas:", midiasEncontradas)
-      const mensagemObj = JSON.parse(messagem); 
-      let hasBase64Ptt = mensagemObj.base64Ptt ? true : false
-      let body = JSON.stringify(mensagemObj);
-      body = messagem.replace(`\n\n`, ``)
-      
-      //messagemNormalizada = messagem.message
-  
-      if (setup_data.plano_ass_ok) {
-        if ( hasBase64Ptt ) {
-            if (clearText && clearText.trim() !== '') {
-              console.log( `phone: ${phone} - Whatsapp: ${setup_data.whatsapp} `, clearText)
-            }
-
-            const response = await fetch(textApiUrl, { method: 'POST', headers, body });
-            const responseText = await response.text().catch(() => "");
-            if (!response.ok) {
-              console.error("[WPP][VOICE] Erro ao enviar áudio:", {
-                status: response.status,
-                statusText: response.statusText,
-                response: responseText.slice(0, 1000),
-                phone: mensagemObj.phone,
-                isLid: mensagemObj.isLid || false,
-              });
-            } else {
-              console.log("[WPP][VOICE] Áudio enviado com sucesso.", {
-                status: response.status,
-                phone: mensagemObj.phone,
-                isLid: mensagemObj.isLid || false,
-              });
-            }
-        }
-      } else {
-        //await sendTyping(phone, false, setup_data);
-        //await sendMensagemLida(phone, false, setup_data) //Envia marca como "false = nao lida" | "true = lida"
-        console.log("Sem licença. Envio de texto bloqueado.");
+      const startedAt = Date.now();
+      let mensagemObj;
+      try {
+        mensagemObj = JSON.parse(messagem);
+      } catch (error) {
+        console.error("[WPP][VOICE] Payload JSON inválido.", {
+          trace_id: traceId,
+          message: error?.message || String(error),
+        });
+        return new Response(JSON.stringify({ ok: false, error: "Payload JSON inválido" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
       }
-      //}
-      //catch (error) {
-      //  console.log("Erro envio do audio. Audio nao enviado para a API Whatsapp", error );
-      // }
+
+      const base64Chars = typeof mensagemObj.base64Ptt === "string" ? mensagemObj.base64Ptt.length : 0;
+      const phoneMasked = maskPhoneForDiagnostics(mensagemObj.phone);
+      console.log("[WPP][VOICE] Envio iniciado.", {
+        trace_id: traceId,
+        phone: phoneMasked,
+        is_lid: Boolean(mensagemObj.isLid),
+        base64_present: base64Chars > 0,
+        base64_characters: base64Chars,
+        json_characters: String(messagem).length,
+        license_ok: Boolean(setup_data.plano_ass_ok),
+      });
+
+      if (!setup_data.plano_ass_ok) {
+        console.error("[WPP][VOICE] Envio bloqueado: licença/plano não aprovado.", { trace_id: traceId });
+        return new Response(JSON.stringify({ ok: false, error: "Licença/plano não aprovado" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (!base64Chars) {
+        console.error("[WPP][VOICE] Envio bloqueado: base64Ptt vazio.", { trace_id: traceId });
+        return new Response(JSON.stringify({ ok: false, error: "base64Ptt vazio" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      try {
+        const response = await fetch(`${zApiBaseUrl}/send-voice-base64`, {
+          method: "POST",
+          headers,
+          body: messagem.replace(`\n\n`, ""),
+        });
+        const responseText = await response.text().catch(() => "");
+        let responseJson = null;
+        try {
+          responseJson = JSON.parse(responseText);
+        } catch {
+          // Mantém resposta textual curta para diagnóstico, sem registrar o áudio.
+        }
+
+        const logicalFailure = responseJson?.ok === false
+          || responseJson?.success === false
+          || String(responseJson?.status || "").toLowerCase() === "error";
+        const failed = !response.ok || logicalFailure;
+        const elapsedMs = Date.now() - startedAt;
+        const responseSummary = responseText
+          .slice(0, 700)
+          .replace(/[\r\n]+/g, " ")
+          .replace(/[A-Za-z0-9+/]{100,}={0,2}/g, "[base64 removido]");
+
+        if (failed) {
+          console.error("[WPP][VOICE] API recusou/falhou ao enviar.", {
+            trace_id: traceId,
+            http_status: response.status,
+            status_text: response.statusText,
+            logical_failure: logicalFailure,
+            response: responseSummary,
+            phone: phoneMasked,
+            is_lid: Boolean(mensagemObj.isLid),
+            elapsed_ms: elapsedMs,
+          });
+        } else {
+          console.log("[WPP][VOICE] API aceitou o envio.", {
+            trace_id: traceId,
+            http_status: response.status,
+            response: responseSummary,
+            phone: phoneMasked,
+            is_lid: Boolean(mensagemObj.isLid),
+            elapsed_ms: elapsedMs,
+          });
+        }
+
+        const status = failed && response.ok ? 502 : response.status;
+        return new Response(responseText || JSON.stringify({ ok: !failed }), {
+          status,
+          headers: { "Content-Type": response.headers.get("content-type") || "application/json" },
+        });
+      } catch (error) {
+        console.error("[WPP][VOICE] Falha de rede ao chamar API de envio.", {
+          trace_id: traceId,
+          name: error?.name || "Error",
+          message: error?.message || String(error),
+          phone: phoneMasked,
+          elapsed_ms: Date.now() - startedAt,
+        });
+        return new Response(JSON.stringify({ ok: false, error: error?.message || String(error) }), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
-  
-  
+
+    console.log(`Iniciando sendZapiResponse tipo: ${tipo} com a mensagem:`, messagem);
+    let textoMensagem = messagem, midiasEncontradas, linksEncontrados, extractedContent = [];
+    let l_fn_envia_markdown = false;
+
+    const mensagemObj = JSON.parse(messagem);
+    let textoProcessado = mensagemObj?.message || mensagemObj?.description || "";
+    console.log("tipo !== 'send-voice-base64 (entrada)'", textoProcessado);
+
+    const retorna_fn_markdown = await fn_markdown(textoProcessado);
+    if (
+      (Array.isArray(retorna_fn_markdown.midiasEncontradas) && retorna_fn_markdown.midiasEncontradas.length > 0)
+      || (Array.isArray(retorna_fn_markdown.linksEncontrados) && retorna_fn_markdown.linksEncontrados.length > 0)
+    ) {
+      textoMensagem = retorna_fn_markdown.textoMensagem;
+      const regex = /\n{3,}/g;
+      textoMensagem = textoMensagem.replace(regex, "");
+      midiasEncontradas = retorna_fn_markdown.midiasEncontradas || [];
+      linksEncontrados = retorna_fn_markdown.linksEncontrados || [];
+      l_fn_envia_markdown = midiasEncontradas.length > 0 || linksEncontrados.length > 0;
+      messagem = retorna_fn_markdown.newMessage || "";
+    }
+
+    const messagemNormalizada = messagem.replace(/\r/g, "") || " ";
+    console.log("Conteúdo da variável 'messagemNormalizada'", tipo, messagemNormalizada);
+
     // ----- VERIFICAÇÃO PRIORITÁRIA 1: MENUS DE OPÇÕES (LIST MESSAGES) -----
     try {
       // messagemNormalizada = Array.isArray(messagemNormalizada) ? messagemNormalizada : []
@@ -360,7 +409,9 @@ export async function sendMensagemLida(phone, true_false, setup_data) {
     }
   }
   
-  export async function sendRecording(phone, true_false, setup_data) {
+  export async function sendRecording(phone, true_false, setup_data, diagnostic = {}) {
+    const traceId = diagnostic?.traceId || null;
+    const startedAt = Date.now();
     //console.log("setup_data: Typing", true_false );
     //Softset API
     let isLidFallback = true;
@@ -384,14 +435,45 @@ export async function sendMensagemLida(phone, true_false, setup_data) {
 
     try {
       const response = await fetch(zApiUrl, { method: 'POST', headers, body });
-      if (!response.ok) throw new Error(`Erro ao enviar, resposta: ${response.status} - ${response.statusText}`);
-      const data = await response.json();
-      //return data.zaapId 
-      return new Response(JSON.stringify(data), { status: 200 }); // Aqui, você retorna um Response válido
+      const responseText = await response.text().catch(() => "");
+      if (!response.ok) {
+        console.error("[WPP][RECORDING] API recusou alteração do indicador.", {
+          trace_id: traceId,
+          value: Boolean(true_false),
+          http_status: response.status,
+          status_text: response.statusText,
+          response: responseText.slice(0, 300).replace(/[\r\n]+/g, " "),
+          phone: maskPhoneForDiagnostics(setup_data.isLid ? setup_data.chatLid : phone),
+          is_lid: Boolean(setup_data.isLid),
+          elapsed_ms: Date.now() - startedAt,
+        });
+        throw new Error(`Erro ao enviar, resposta: ${response.status} - ${response.statusText}`);
+      }
+      let data = {};
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        data = { response: responseText.slice(0, 300) };
+      }
+      console.log("[WPP][RECORDING] Indicador atualizado.", {
+        trace_id: traceId,
+        value: Boolean(true_false),
+        http_status: response.status,
+        phone: maskPhoneForDiagnostics(setup_data.isLid ? setup_data.chatLid : phone),
+        is_lid: Boolean(setup_data.isLid),
+        elapsed_ms: Date.now() - startedAt,
+      });
+      return new Response(JSON.stringify(data), { status: 200 });
     } catch (error) {
-      console.log(`Erro ao enviar o recording: ${error.message}`);
-      console.log("url chamada: ", zApiUrl);
-      const x = await fn.sendNotification(phone, '3C9E8C57317B308727BBD604DAF2BCF1', `Contato do cliente: ${setup_data.nome_fantasia}\nErro em ${zApiUrl}: \n${error.message}`, `Erro Whatsapp Worker`)
+      console.error("[WPP][RECORDING] Falha ao alterar indicador.", {
+        trace_id: traceId,
+        value: Boolean(true_false),
+        message: error?.message || String(error),
+        phone: maskPhoneForDiagnostics(setup_data.isLid ? setup_data.chatLid : phone),
+        is_lid: Boolean(setup_data.isLid),
+        elapsed_ms: Date.now() - startedAt,
+      });
+      const x = await fn.sendNotification(phone, '3C9E8C57317B308727BBD604DAF2BCF1', `Contato do cliente: ${setup_data.nome_fantasia}\nErro no endpoint recording: \n${error.message}`, `Erro Whatsapp Worker`)
   
       return new Response(`Erro ao ao enviar o recording:: ${error.message}`, { status: 200 });
     }
