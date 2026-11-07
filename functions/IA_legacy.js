@@ -2069,7 +2069,10 @@ async function FioraSpeech(text, env, traceId) {
 
     const contentType = response.headers.get("content-type") || "";
     if (!response.ok || !contentType.toLowerCase().includes("audio/ogg")) {
-      const responseBody = await response.text().catch(() => "");
+      const responseBody = contentType.toLowerCase().includes("json")
+        || contentType.toLowerCase().startsWith("text/")
+        ? await response.text().catch(() => "")
+        : "[corpo binário omitido]";
       console.error("[TTS][Fiora] Resposta recusada.", {
         trace_id: traceId,
         status: response.status,
