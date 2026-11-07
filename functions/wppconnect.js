@@ -117,7 +117,9 @@ export async function sendZapiResponse(phone, messagem, tipo, setup_data, env, c
         }
 
         const status = failed && response.ok ? 502 : response.status;
-        return new Response(responseText || JSON.stringify({ ok: !failed }), {
+        const responseBody = responseText
+          || (status === 204 || status === 304 ? null : JSON.stringify({ ok: !failed }));
+        return new Response(responseBody, {
           status,
           headers: { "Content-Type": response.headers.get("content-type") || "application/json" },
         });
