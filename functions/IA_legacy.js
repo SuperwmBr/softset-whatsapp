@@ -2244,7 +2244,16 @@ export async function Text_to_Speech(text, phone, setup_data, env, midiasEncontr
           "isLid": setup_data.isLid || false,
           "base64Ptt": voz_b64
         })
-      ttsStage = "voice_send";\n      console.log("[TTS] Enviando arquivo ao endpoint do WhatsApp.", {\n        trace_id: traceId,\n        destino: phoneMasked,\n        destino_completo: Boolean(phoneDestino),\n        is_lid: Boolean(setup_data.isLid),\n        chat_lid_present: Boolean(setup_data.chatLid),\n        audio_base64_caracteres: voz_b64.length,\n        payload_json_caracteres: jBody.length,\n      });
+      ttsStage = "voice_send";
+      console.log("[TTS] Enviando arquivo ao endpoint do WhatsApp.", {
+        trace_id: traceId,
+        destino: phoneMasked,
+        destino_completo: Boolean(phoneDestino),
+        is_lid: Boolean(setup_data.isLid),
+        chat_lid_present: Boolean(setup_data.chatLid),
+        audio_base64_caracteres: voz_b64.length,
+        payload_json_caracteres: jBody.length,
+      });
   
       const zapiResponse = await wpp.sendZapiResponse(
         phone, jBody, "send-voice-base64", setup_data, env, thread_mensagem, { traceId }
