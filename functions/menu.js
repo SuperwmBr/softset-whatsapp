@@ -3,16 +3,10 @@ import * as formata from './formatacoes.js';
 import * as fn from './funcoes-genericas.js';
 import * as ia from './IA.js';
 import * as wpp from './wppconnect.js';
+import { isMenuTrigger } from './menu-trigger.js';
 
 export async function fn_chamando_menu(message, setup_data) {
-    return (
-      setup_data.wellcome_menu
-        .toLowerCase()
-        .split('|')                    // Divide o menu por vírgulas
-        .some(keyword =>
-          message.trim().toLowerCase() === keyword.trim().toLowerCase() // Compara diretamente
-        )
-    )
+    return isMenuTrigger(message, setup_data.wellcome_menu);
   }
   
 
@@ -582,26 +576,7 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
   
   
   
-    if (
-      // Verifica se a mensagem tem apenas uma palavra e a palavra faz parte do menu
-      (message.trim().toLowerCase().split(/\s+/).length === 1 &&
-        setup_data.wellcome_menu
-          .toLowerCase()                // Converte o menu para minúsculas
-          .split('|')                    // Divide o menu por vírgulas
-          .some(keyword => message
-            .toLowerCase()               // Converte a 'message' para minúsculas
-            .includes(keyword.trim())    // Verifica se a palavra aparece na mensagem, após remoção de espaços extras
-          )
-      ) ||
-      // Verifica se a mensagem contém uma frase composta exata do menu e não há mais palavras após a frase
-      setup_data.wellcome_menu
-        .toLowerCase()
-        .split('|')                    // Divide o menu por vírgulas
-        .some(keyword =>
-          message.trim().toLowerCase() === keyword.trim().toLowerCase() // Compara diretamente
-        ) ||
-      message.trim().toLowerCase() === '⏮️ voltar ao menu' // Caso especial de "voltar ao menu"
-    ) {
+    if (isMenuTrigger(message, setup_data.wellcome_menu)) {
   
       //  if ((message.trim().toLowerCase().split(/\s+/).length === 1 &&  message.trim().toLowerCase() === "menu") || message.trim().toLowerCase() === '⏮️ voltar ao menu') {
   

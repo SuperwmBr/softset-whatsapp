@@ -6,6 +6,7 @@ import * as forms from './functions/forms.js';
 import * as fn from './functions/funcoes-genericas.js';
 import * as ia from './functions/IA.js';
 import * as menu from './functions/menu.js';
+import { isMenuTrigger } from './functions/menu-trigger.js';
 import * as wpp from './functions/wppconnect.js';
 import * as fraudguard from './functions/fraudguard.js';
 
@@ -431,6 +432,9 @@ export default {
 
         // FIRELABELS ===> O que fazer se um contato estiver etiquetado <==
         // FIRELABELS ===> O que fazer se um contato estiver etiquetado <==
+        let etiquetaIaSempreAtiva = false;
+        let menuBloqueadoPorEtiqueta = false;
+        const mensagemAntesDasEtiquetas = messagem;
         try {
           // Desestruturação de tudo que vamos usar do setup_data
           const {
@@ -473,9 +477,10 @@ export default {
                   if ((value_type === 'boolean' && value === "1") || (value_type === 'string' && value === "1")) {
                     //                    console.log( "Entrou em 'ignore_menu' ")
                     await fn.whatsapp_liga_desl_GPT("0", `${phone}_${token}`, env);
-                    let menu_digitado = await menu.fn_chamando_menu(messagem.toLowerCase(), setup_data)
+                    let menu_digitado = await menu.fn_chamando_menu(mensagemAntesDasEtiquetas.toLowerCase(), setup_data)
                     //                    console.log( `${messagem.toLowerCase()} foi informada em 'ignore_menu'`, menu_digitado)
                     if (menu_digitado) {
+                      menuBloqueadoPorEtiqueta = true;
                       const jBody = JSON.stringify({
                         phone: isLid ? setup_data.chatLid : phone,
                         isLid: isLid,
@@ -516,6 +521,7 @@ export default {
 
                 case 'ai_always':
                   if (value_type === 'boolean' && value === "1") {
+                    etiquetaIaSempreAtiva = true;
                     messagem = "💬 " + messagem;
                     await fn.whatsapp_liga_desl_GPT("1", `${phone}_${token}`, env);
                     //                    console.log(">> ai_always:", messagem);
@@ -611,6 +617,10 @@ export default {
         } catch (erro) {
           console.log("Erro ao executar FireLabels:", erro);
         }
+        if (menuBloqueadoPorEtiqueta) {
+          messagem = "";
+          await fn.whatsapp_liga_desl_GPT("0", `${phone}_${setup_data.token}`, env);
+        }
 
 
         //
@@ -698,6 +708,16 @@ export default {
 
         //        console.log("URL de Entrada: ", Requesturl);
 
+
+        // A transcrição pode receber um marcador de modo; retire-o apenas para
+        // identificar o comando, mantendo o texto original nas demais mensagens.
+        const textoParaMenu = messageData.type === 'ptt' || messageData.type === 'audio'
+          ? messagem.replace(/^(?:🎤|📖)\s*/u, '')
+          : messagem;
+        if (messageData.status === 'RECEIVED' && !etiquetaIaSempreAtiva && isMenuTrigger(textoParaMenu, setup_data.wellcome_menu)) {
+          messagem = 'menu';
+          tipo_atendimento = 1;
+        }
 
         if (messagem === "" || phone.includes("-") || messagem.startsWith("Instruções Principais: Este prompt foi elaborado para que você")) { // previnir que não apresente o prompt system por algum motivo 
           // Se Grupo, desconsiderar
