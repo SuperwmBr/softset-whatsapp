@@ -6,6 +6,7 @@ import * as forms from './functions/forms.js';
 import * as fn from './functions/funcoes-genericas.js';
 import * as ia from './functions/IA.js';
 import * as menu from './functions/menu.js';
+import { isMenuTrigger } from './functions/menu-trigger.js';
 import * as wpp from './functions/wppconnect.js';
 import * as fraudguard from './functions/fraudguard.js';
 
@@ -431,6 +432,7 @@ export default {
 
         // FIRELABELS ===> O que fazer se um contato estiver etiquetado <==
         // FIRELABELS ===> O que fazer se um contato estiver etiquetado <==
+        const comandoMenuAntesDasEtiquetas = isMenuTrigger(messagem, setup_data.wellcome_menu);
         try {
           // Desestruturação de tudo que vamos usar do setup_data
           const {
@@ -516,8 +518,10 @@ export default {
 
                 case 'ai_always':
                   if (value_type === 'boolean' && value === "1") {
-                    messagem = "💬 " + messagem;
-                    await fn.whatsapp_liga_desl_GPT("1", `${phone}_${token}`, env);
+                    if (!comandoMenuAntesDasEtiquetas) {
+                      messagem = "💬 " + messagem;
+                      await fn.whatsapp_liga_desl_GPT("1", `${phone}_${token}`, env);
+                    }
                     //                    console.log(">> ai_always:", messagem);
                   }
                   break;
@@ -698,6 +702,16 @@ export default {
 
         //        console.log("URL de Entrada: ", Requesturl);
 
+
+        // A transcrição pode receber um marcador de modo; retire-o apenas para
+        // identificar o comando, mantendo o texto original nas demais mensagens.
+        const textoParaMenu = messageData.type === 'ptt' || messageData.type === 'audio'
+          ? messagem.replace(/^(?:🎤|📖)\s*/u, '')
+          : messagem;
+        if (messageData.status === 'RECEIVED' && isMenuTrigger(textoParaMenu, setup_data.wellcome_menu)) {
+          messagem = 'menu';
+          tipo_atendimento = 1;
+        }
 
         if (messagem === "" || phone.includes("-") || messagem.startsWith("Instruções Principais: Este prompt foi elaborado para que você")) { // previnir que não apresente o prompt system por algum motivo 
           // Se Grupo, desconsiderar
