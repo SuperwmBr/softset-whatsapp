@@ -225,6 +225,10 @@ export async function fetchOpenAI_V2(
       messageId
     );
 
+    // Sem isto, o indicador ("digitando"/"gravando") ligado acima nunca é
+    // desligado no caminho de sucesso — só no catch de erro.
+    await stopPresence(phone, setupData, audioOnly);
+
     console.log('[AI][CHAT] success', {
       request_id: requestId,
       elapsed_ms: Date.now() - startedAt,

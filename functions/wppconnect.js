@@ -417,6 +417,7 @@ export async function sendMensagemLida(phone, true_false, setup_data) {
     const startedAt = Date.now();
     //console.log("setup_data: Typing", true_false );
     //Softset API
+    const recordingDestination = setup_data.isLid ? setup_data.chatLid : setup_data.phone;
     let isLidFallback = true;
     if(  phone.startsWith('55') && 
                 (phone.length === 12 || phone.length === 13) ) {
@@ -861,7 +862,7 @@ export async function enviarMensagemWhatsapp(env, mensagem, phone, setup_data, a
         console.log("midiasEncontradas", midiasEncontradas)
   
         //const ret = await Text_to_Speech(thread_mensagem, phone, setup_data, env) 
-        const ret = await ia.Text_to_Speech(textoMensagem, phone, setup_data, env, midiasEncontradas, messageId, true)
+        const ret = await ia.Text_to_Speech(textoMensagem, phone, setup_data, env, midiasEncontradas, messageId, false)
   
         console.log(`retorno Text_to_Speech: ${JSON.stringify(ret)}`)
   
