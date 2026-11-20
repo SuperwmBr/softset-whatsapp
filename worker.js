@@ -660,7 +660,12 @@ export default {
 
 
           let msg = ""
-          let timeDelay =0, difTimestamp_atual = 0, timeremain = 0, ligaMicResposta = false
+          // ligaMicResposta: era controlada pelo delay de 15min (comentado abaixo).
+          // Com o delay desativado, o padrão precisa ser `true` — caso contrário
+          // `cEmoji` abaixo fica vazio, a transcrição não recebe o prefixo 🎤/💬/📖
+          // e a mensagem cai (sem reconhecimento) no processamento do menu em vez
+          // de chegar à IA, interrompendo o fluxo de resposta por áudio.
+          let timeDelay =0, difTimestamp_atual = 0, timeremain = 0, ligaMicResposta = true
           // Liga o microfone para resposta da IA (se a condição acima permitir)
           msg = await ia.obtemTranscricaoAudio(messagem, setup_data, env, phone, paranToken);
           
