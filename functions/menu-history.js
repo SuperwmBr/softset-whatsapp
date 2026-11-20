@@ -13,9 +13,10 @@ import { BACK_OPTION_ID, BACK_OPTION_TITLE } from './menu-trigger.js';
 
 const LEGACY_BACK_OPTION_TITLE = '⏮️ voltar ao menu';
 
-// Histórico abandonado expira em 1 hora de inatividade: tempo suficiente para
-// uma navegação normal, sem manter estado indefinidamente para quem some.
-export const MENU_HISTORY_TTL_SECONDS = 60 * 60;
+// Histórico abandonado expira em 24 horas de inatividade. Se o contato voltar
+// a escrever depois disso sem um histórico válido, o fallback de getMenuHistory
+// (null) faz a navegação cair em segurança no menu principal.
+export const MENU_HISTORY_TTL_SECONDS = 24 * 60 * 60;
 
 export function menuHistoryKey(token, phone) {
   return `nav:${token}:${phone}`;
