@@ -6,7 +6,7 @@ import * as forms from './functions/forms.js';
 import * as fn from './functions/funcoes-genericas.js';
 import * as ia from './functions/IA.js';
 import * as menu from './functions/menu.js';
-import { isMenuTrigger } from './functions/menu-trigger.js';
+import { isMenuTrigger, isBackOption } from './functions/menu-trigger.js';
 import * as wpp from './functions/wppconnect.js';
 import * as fraudguard from './functions/fraudguard.js';
 
@@ -319,7 +319,14 @@ export default {
 
         const { phone, senderName, text, listResponseMessage, connectedPhone, messageId, instanceId, photo, fileUrl, isLid } = messageData;
         let messagem = text?.message || (listResponseMessage ? listResponseMessage.title : '');
-        console.log(">>> Mensagem: ", messagem)
+        // ID estável da opção selecionada na lista (quando o provedor o informa).
+        // Diferentes provedores/versões usam nomes de campo distintos; o título
+        // (acima) continua funcionando como alternativa de compatibilidade.
+        const selectedRowId = listResponseMessage?.selectedRowId
+          ?? listResponseMessage?.rowId
+          ?? listResponseMessage?.id
+          ?? null;
+        console.log(">>> Mensagem: ", messagem, " | selectedRowId:", selectedRowId)
         await env.whatsapp_lastmessage.put(`${paranToken}:${phone}`, messagem);
 
         //await whatsapp_liga_desl_GPT_audio( 1, `${phone}_${setup_data.token}`, env);   //Audio habilitado por Default
@@ -419,7 +426,7 @@ export default {
         console.log(`Tipo Atendimento: ${tipo_atendimento} :: IA ok? ${se_ia_ok}`);
         let lbot = 0;
 
-        if ( (tipo_atendimento === 3 && tipo_gpt &&  tipo_gpt === "0") || messagem.toLowerCase() === "menu" ) {
+        if ( (tipo_atendimento === 3 && tipo_gpt &&  tipo_gpt === "0") || messagem.toLowerCase() === "menu" || isBackOption(messagem, selectedRowId) ) {
             tipo_atendimento = 1
             console.log(`Tipo Atendimento estava = 3, mas bloquado para atendimento por GPT: Tipo atendimento agora: ${tipo_atendimento} :: IA ok? ${se_ia_ok}`);
         }
@@ -741,10 +748,10 @@ export default {
           if ((
             (messagem.trim().toLowerCase().split(/\s+/).length === 1 && messagem.trim().toLowerCase() === "menu")
             ||
-            (messagem.trim().toLowerCase() === "⏮️ voltar ao menu")
+            isBackOption(messagem, selectedRowId)
           )
           ) {
-            console.log(`Usuário ${phone} solicitou menu.`);
+            console.log(`Usuário ${phone} solicitou menu ou voltar um nível.`);
             // Lógica para apresentar o menu inicial ao usuário.
             // Pode ser o ponto para iniciar um novo atendimento se não houver um ativo.
             // return new Response("OK", { status: 200 }); // Descomente se quiser encerrar o processamento aqui
@@ -1197,7 +1204,7 @@ export default {
           const chave_gpt = `${phone}_${setup_data.token}`
           //digitou apenas menu ou primeira mensagem do dia da sessao(Token)
           if ((messagem.trim().toLowerCase().split(/\s+/).length === 1 && messagem.trim().toLowerCase() === "menu") ||
-            (messagem.trim().toLowerCase() === "⏮️ voltar ao menu")
+            isBackOption(messagem, selectedRowId)
           ) {
             await wpp.sendTyping(phone, true, setup_data) // liga o "digitando..." (Typing)
             await fn.whatsapp_liga_desl_GPT("0", chave_gpt, env);
@@ -1464,7 +1471,7 @@ export default {
           ) {
             //            console.log(`Entrando no processMessageV2() de ${phone}`);
             await wpp.sendTyping(phone, false, setup_data) // Desliga o "digitando..." (Typing)
-            replyMessage = await menu.processMessageV2(phone, messagem, senderName, env, setup_data);
+            replyMessage = await menu.processMessageV2(phone, messagem, senderName, env, setup_data, selectedRowId);
 
             return replyMessage;
           }

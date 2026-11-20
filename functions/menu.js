@@ -3,14 +3,28 @@ import * as formata from './formatacoes.js';
 import * as fn from './funcoes-genericas.js';
 import * as ia from './IA.js';
 import * as wpp from './wppconnect.js';
-import { isMenuTrigger } from './menu-trigger.js';
+import { isMenuTrigger, isBackOption, BACK_OPTION_ID, BACK_OPTION_TITLE } from './menu-trigger.js';
+import {
+  getMenuHistory,
+  saveMenuHistory,
+  clearMenuHistory,
+  findItemById,
+  findAncestorPath,
+  resolveStack,
+  buildOptionsWithBack,
+} from './menu-history.js';
 
 export async function fn_chamando_menu(message, setup_data) {
     return isMenuTrigger(message, setup_data.wellcome_menu);
   }
-  
 
-export async function processMessageV2(phone, message, senderName, env, setup_data) {
+
+// `selectedRowId` é o ID estável da opção escolhida pelo contato (ex.:
+// `listResponseMessage.selectedRowId`), quando o provedor o informa. É usado
+// para reconstruir o caminho de navegação com precisão e para reconhecer o
+// botão "Voltar" sem depender do título (que pode se repetir ou ser alterado
+// no gestor). Quando ausente, o fluxo cai de volta para a comparação por título.
+export async function processMessageV2(phone, message, senderName, env, setup_data, selectedRowId = null) {
     // Carregar o menu do KV storage
     const token = setup_data.app_key;
     const timestampAtual = Math.floor(Date.now() / 1000);
@@ -501,14 +515,14 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
         buttonText: "✨ ⏮️ Voltar✨",
         sections: [
           {
-            title: 'Clique aqui para voltar ao menu principal',
+            title: 'Clique aqui para voltar à lista anterior',
             rows: [
               {
-                "rowId": "99",
-                "title": "⏮️ Voltar ao Menu",
+                "rowId": BACK_OPTION_ID,
+                "title": BACK_OPTION_TITLE,
                 "description": ""
               }]
-          }], 
+          }],
           options: { markIsRead: false} ,
         delayMessage: "1"
       });
@@ -557,8 +571,66 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
   
       return new Response('Mensagem enviada com sucesso', { status: 200 });
     };
-  
-  
+
+    // Envia o menu principal (nível raiz da hierarquia) e limpa o histórico de
+    // navegação do contato, já que não existe nível anterior ao menu principal.
+    const sendMainMenu = async () => {
+      const options = menu_base.map(item => ({
+        rowId: item.id,
+        title: item.title,
+        description: ""
+      }));
+
+      let descMenu = ""
+      if (setup_data.textoMenuPrincipal) {
+        descMenu = setup_data.textoMenuPrincipal.replace('[nomeContato]', senderName).replace('[nomeEmpresa]', setup_data.nome_fantasia)
+      } else {
+        descMenu = `\n👩‍🦰 Olá ${senderName} !\n\n😃 Somos *${setup_data.nome_fantasia}*\n\n_Para mostrar esta mensagem novamente, envie:_\n*_Menu_*\n\n👩‍🦰 *Informe abaixo como podemos te ajudar* 👇`
+      }
+
+      const jBody = JSON.stringify({
+        phone: setup_data.isLid ? setup_data.chatLid : setup_data.phone,
+        isGroup: false,
+        isLid: setup_data.isLid,
+        description: descMenu,
+        buttonText: "✨Selecione uma opção✨",
+        sections: [
+          {
+            title: "🙎‍♀️ O que gostaria de saber?",
+            rows: options // Aqui você passa diretamente as opções
+          }
+        ],
+        options: { markIsRead: false },
+        delayMessage: "1"
+      });
+      await wpp.sendZapiResponse(phone, jBody, 'send-option-list', setup_data, env);
+      await clearMenuHistory(env, token, phone);
+      return new Response('Menu enviado com sucesso', { status: 200 });
+    };
+
+    // Reenvia uma lista (submenu) já exibida anteriormente na navegação, usada
+    // apenas pelo botão "Voltar". Não repete efeitos colaterais de uma nova
+    // seleção (ex.: ativar o modo formulário) — apenas reabre a mesma lista.
+    const sendResolvedList = async (item) => {
+      const options = buildOptionsWithBack(item.children);
+      const jBody = JSON.stringify({
+        phone: setup_data.isLid ? setup_data.chatLid : setup_data.phone,
+        isGroup: false,
+        isLid: setup_data.isLid,
+        description: item.text || `Selecione uma opção em ${item.title}:`,
+        buttonText: "👉 Selecione 👈",
+        sections: [
+          {
+            title: item.title,
+            rows: options
+          }],
+        options: { markIsRead: false },
+        delayMessage: "1"
+      });
+      await wpp.sendZapiResponse(phone, jBody, 'send-option-list', setup_data, env);
+    };
+
+
     // Processar mensagens do menu
     // Bom dia!, Olá! Tudo bem? .... 
     //    console.log("No menu, entrando em sendMessage" , menu_base )
@@ -576,72 +648,70 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
   
   
   
+    // Comando explícito "Menu": sempre vai direto ao nível raiz, independente
+    // do botão "Voltar" e de qualquer navegação em andamento.
     if (isMenuTrigger(message, setup_data.wellcome_menu)) {
-  
-      //  if ((message.trim().toLowerCase().split(/\s+/).length === 1 &&  message.trim().toLowerCase() === "menu") || message.trim().toLowerCase() === '⏮️ voltar ao menu') {
-  
+
       //Se a pessoa chamou o menu ou palavras de inicio de conversa, desliga o WhatsappAI se ativado
-  
-  
       console.log(` Entrou menu: Tipo GPT para: ${phone}_${setup_data.app_key}`)
       await fn.whatsapp_liga_desl_GPT("0", `${phone}_${setup_data.app_key}`, env);
-  
-      // Criar lista de opções do menu principal
-      const options = menu_base.map(item => ({
-        rowId: item.id,
-        title: item.title,
-        description: ""
-      }));
-  
-      let descMenu = ""
-      if (setup_data.textoMenuPrincipal) {
-        descMenu = setup_data.textoMenuPrincipal.replace('[nomeContato]', senderName).replace('[nomeEmpresa]', setup_data.nome_fantasia)
-      } else {
-        descMenu = `\n👩‍🦰 Olá ${senderName} !\n\n😃 Somos *${setup_data.nome_fantasia}*\n\n_Para mostrar esta mensagem novamente, envie:_\n*_Menu_*\n\n👩‍🦰 *Informe abaixo como podemos te ajudar* 👇`
-      }
-  
-  
-      const jBody = JSON.stringify({
-        phone: setup_data.isLid ? setup_data.chatLid : setup_data.phone,
-        isGroup: false,
-        isLid: setup_data.isLid,
-        description: descMenu,
-        buttonText: "✨Selecione uma opção✨",
-        sections: [
-          {
-            title: "🙎‍♀️ O que gostaria de saber?",
-            rows: options // Aqui você passa diretamente as opções
-          }
-        ], 
-        options: { markIsRead: false} ,
-        delayMessage: "1"
-      });
-      await wpp.sendZapiResponse(phone, jBody, 'send-option-list', setup_data, env);
-      return new Response('Menu enviado com sucesso', { status: 200 });
+
+      return await sendMainMenu();
     }
-  
-  
-    // Procurar item selecionado no menu
-    const selectedItem = findMenuItem(menu_base, message);
-  
+
+    // Botão/comando "Voltar": reabre exatamente a lista exibida imediatamente
+    // antes na hierarquia de navegação (não o menu principal, a menos que o
+    // nível imediatamente anterior seja de fato o menu principal).
+    if (isBackOption(message, selectedRowId)) {
+
+      await fn.whatsapp_liga_desl_GPT("0", `${phone}_${setup_data.app_key}`, env);
+
+      const history = await getMenuHistory(env, token, phone);
+      if (!history) {
+        // Sem histórico (nunca navegou, expirou ou está corrompido):
+        // fallback seguro para o menu principal, sem travar o atendimento.
+        console.log(`[menu] Histórico de navegação ausente/expirado para ${phone}_${token}. Fallback para o menu principal.`);
+        return await sendMainMenu();
+      }
+
+      // Se a última tela era a resposta final de um item (texto), "Voltar"
+      // reabre a lista que continha esse item — ou seja, a própria pilha
+      // atual, sem retroceder. Se a última tela já era uma lista de opções,
+      // "Voltar" sobe um nível (desempilha o último item selecionado).
+      const stackAlvo = history.onLeaf ? history.stack : history.stack.slice(0, -1);
+      const resolved = resolveStack(menu_base, stackAlvo);
+
+      if (!resolved || !resolved.currentItem) {
+        // Chegou ao nível raiz, ou o caminho ficou inválido (ex.: opção
+        // removida/alterada no gestor): cai em segurança no menu principal.
+        return await sendMainMenu();
+      }
+
+      await sendResolvedList(resolved.currentItem);
+      await saveMenuHistory(env, token, phone, { stack: stackAlvo, onLeaf: false });
+      return new Response('Opção processada com sucesso', { status: 200 });
+    }
+
+
+    // Procurar item selecionado no menu. Prioriza o ID estável da opção (ex.:
+    // `listResponseMessage.selectedRowId`), buscando pelo título apenas como
+    // alternativa de compatibilidade (títulos podem se repetir ou ser
+    // reconfigurados no gestor).
+    let selectedItem = findItemById(menu_base, selectedRowId);
+    if (!selectedItem) {
+      selectedItem = findMenuItem(menu_base, message);
+    }
+
     if (selectedItem) {
+      // Cadeia de IDs dos itens ancestrais de `selectedItem`, usada para
+      // reconstruir/gravar a posição atual no histórico de navegação.
+      const ancestors = findAncestorPath(menu_base, selectedItem.id) || [];
+
       if (selectedItem.children.length > 0) {
         // É um submenu (option-list)
-  
-        const options = selectedItem.children.map(child => ({
-          rowId: child.id,
-          title: child.title,
-          description: ""
-        }));
-  
-        // Adiciona a opção "Voltar ao menu" ao final do array options
-        options.push({
-          rowId: '⏮️ Voltar ao Menu',
-          title: '⏮️ Voltar ao Menu',
-          description: ''
-        });
-  
-  
+
+        const options = buildOptionsWithBack(selectedItem.children);
+
         if (selectedItem && selectedItem.text.startsWith("📖")) {     // Escolhendo formulários
   
           //const Form_escolhido_filhos = selectedItem.children[0].children;
@@ -704,12 +774,15 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
         });
   
         await wpp.sendZapiResponse(phone, jBody, 'send-option-list', setup_data, env);
+        // Guarda a posição atual (pilha + item) para que um futuro "Voltar"
+        // reabra exatamente esta lista no nível imediatamente anterior.
+        await saveMenuHistory(env, token, phone, { stack: [...ancestors, selectedItem.id], onLeaf: false });
       } else {
-  
+
         // >>>>> aqui é o trecho onde o usuario selecionou o item do menu ( Item selecionado )<<<<<
         // É um item final (text)
         // Gravar ultima mensagem automática respondida
-  
+
         await sendMessageV2(selectedItem.text);
   
         const datahora = new Date(new Date().getTime() - (3 * 60 * 60 * 1000)).toISOString()
@@ -748,10 +821,14 @@ export async function processMessageV2(phone, message, senderName, env, setup_da
         }
   
         console.log("Selecionado o item: ", selectedItem.text)
+
+        // A lista que continha este item final é a que um futuro "Voltar"
+        // deve reabrir (ex.: a mensagem oferece uma opção de retorno).
+        await saveMenuHistory(env, token, phone, { stack: ancestors, onLeaf: true });
       }
-  
-  
-  
+
+
+
       return new Response('Opção processada com sucesso', { status: 200 });
     }
   
