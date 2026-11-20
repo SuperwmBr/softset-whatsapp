@@ -660,39 +660,39 @@ export default {
 
 
           let msg = ""
-          // ligaMicResposta: era controlada pelo delay de 15min (comentado abaixo).
-          // Com o delay desativado, o padrão precisa ser `true` — caso contrário
-          // `cEmoji` abaixo fica vazio, a transcrição não recebe o prefixo 🎤/💬/📖
-          // e a mensagem cai (sem reconhecimento) no processamento do menu em vez
-          // de chegar à IA, interrompendo o fluxo de resposta por áudio.
-          let timeDelay =0, difTimestamp_atual = 0, timeremain = 0, ligaMicResposta = true
-          // Liga o microfone para resposta da IA (se a condição acima permitir)
-          msg = await ia.obtemTranscricaoAudio(messagem, setup_data, env, phone, paranToken);
-          
-          /* -DESLIGUEI EM 01/11/25, POIS SUBENTENDE-SE QUE O USUARIO PODE ESCREVER OU AUDIO, A RESPOSTA É A MESMA... AUDIO COMO SE FOSSE UM TEXTO DIGITADO...
-          let val_ligadesl_audio = await env.Whatsapp_chatgpt_audio.get(chave) // verifica se há timestamp de delay aguardando...
-          if ( !val_ligadesl_audio || val_ligadesl_audio === 0) {   // Se estiver timestamp na chave do Whatsapp_chatgpt_audio
+          // Quando um atendente humano responde manualmente (bloco de status "SENT"
+          // mais abaixo), gravamos um timestamp em Whatsapp_chatgpt_audio com TTL de
+          // 16min (960s), na chave `delay_<phone>_<app_key>`. Enquanto essa chave
+          // existir, a IA não deve responder ao áudio do contato (já há atendimento
+          // humano em andamento). A chave expira sozinha pelo TTL do KV, então sua
+          // simples ausência já significa "sem atendimento humano recente".
+          const chaveDelayAudio = `delay_${phone}_${setup_data.app_key}`
+          const humanoAtendendoRecentemente = await env.Whatsapp_chatgpt_audio.get(chaveDelayAudio)
+          const ligaMicResposta = !humanoAtendendoRecentemente
+
+          if (ligaMicResposta) {
+            // Liga o microfone para resposta da IA (se a condição acima permitir)
             msg = await ia.obtemTranscricaoAudio(messagem, setup_data, env, phone, paranToken);
+
+            if (!msg) {
+              // obtemTranscricaoAudio já desliga o "digitando..." quando falha, mas
+              // reforçamos aqui (defesa extra) e avisamos o contato, em vez de deixar
+              // a mensagem sem nenhuma resposta.
+              console.log(`[AUDIO] Falha ao transcrever o áudio de ${phone}. mimetype="${messageData.mimetype || ''}" type="${messageData.type || ''}" fileUrl="${messageData.fileUrl || ''}" (fileUrl vazio indica que o provedor/relay não enviou a URL do arquivo para esta mensagem).`);
+              await wpp.sendTyping(phone, false, setup_data);
+              const jBodyFalhaAudio = JSON.stringify({
+                phone: setup_data.isLid ? setup_data.chatLid : phone,
+                isLid: setup_data.isLid,
+                message: `😕 Desculpe, não consegui captar seu áudio agora. Pode tentar novamente ou escrever sua pergunta, por favor?`,
+                options: { markIsRead: false },
+                delayMessage: "1"
+              });
+              await wpp.sendZapiResponse(phone, jBodyFalhaAudio, 'send-message', setup_data, env);
+            }
           } else {
-              timeDelay = 900
-              difTimestamp_atual = (Math.floor(Date.now() / 1000)) - val_ligadesl_audio;
-              timeremain = ( timeDelay-difTimestamp_atual)/60 < 0 ? 0 : (timeDelay-difTimestamp_atual)/60
-              console.log(`Aguardando... ${timeremain} de ${timeDelay}`)
-              ligaMicResposta = difTimestamp_atual > 900 // 3
+            console.log(`[AUDIO] Áudio de ${phone} recebido, mas a IA não vai responder: atendente humano respondeu há menos de 16min (chave: ${chaveDelayAudio}).`);
+            await fn_self_messageAlert(`${setup_data.nome_fantasia}\nMensagem de áudio de ${phone} recebida, mas a IA não respondeu pois já há atendimento humano em andamento (últimos 16min).`, setup_data, env)
           }
-          */
-
-
-          
-
-
-          //const audioDesabilitadoPeloDelay = await env.Whatsapp_chatgpt_audio.get(chave) !== null;
-          //const ligaMicResposta = !audioDesabilitadoPeloDelay; // Reflete o status atual baseado no KV
-
-          if (!ligaMicResposta) {
-            await fn_self_messageAlert( `${setup_data.nome_fantasia}\nA mensagem de audio de ${phone} não foi respondido pela IA devido interação humana. Aguardando total de 15 min (${timeDelay} seg)) programado. minutos restantes: ${timeremain}`, setup_data, env)
-          }
-          console.log(`ligaMicResposta: (Mensagem de audio de ${phone} não está sendo repondida pela IA devido o delay de 15 min (${timeDelay} seg)) programado. minutos restantes: ${timeremain}`);
 
           if (msg) {
 

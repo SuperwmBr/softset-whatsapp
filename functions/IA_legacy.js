@@ -1802,12 +1802,17 @@ export async function fetchOpenAI_V2(userMessage, prompt_system, senderName, mes
 
 export async function obtemTranscricaoAudio(messagem, setup_data, env, phone, paranToken) {
     // Transcrever audio //
-    await wpp.sendTyping(phone, true, setup_data); // Desliga o "digitando..." (Typing)
-    const fileaudio = setup_data.fileUrl.replace("fiftymotorhome.s3.amazonaws.com/", "softset.com.br/")
-  
+    await wpp.sendTyping(phone, true, setup_data); // Liga o "digitando..." (Typing)
+    const fileaudio = (setup_data.fileUrl || "").replace("fiftymotorhome.s3.amazonaws.com/", "softset.com.br/")
+
     console.log("fileaudio", fileaudio)
     if (!fileaudio) {
-      console.error(`fileaudio não passado:`)
+      console.error(`[AUDIO] fileUrl não veio preenchido para esta mensagem (mimetype: ${setup_data.mimetype || 'desconhecido'}). Sem a URL do arquivo não há como transcrever o áudio.`)
+      // Sem isto, o "digitando..." ligado no início desta função fica preso
+      // indefinidamente, já que o fluxo é interrompido aqui (retorno null).
+      await wpp.sendTyping(phone, false, setup_data).catch((error) => {
+        console.warn('[AUDIO] Falha ao desligar o "digitando..." após falha de transcrição.', error?.message || String(error));
+      });
       return null
     }
   
